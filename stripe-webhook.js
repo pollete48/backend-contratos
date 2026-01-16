@@ -148,12 +148,14 @@ async function stripeWebhookHandler(req, res) {
     const paidAt = new Date(session.created * 1000);
 
     const { code, expiresAt } = await createLicenseFromStripe(db, {
-      email: customerEmail,
-      stripeSessionId,
-      paymentIntentId,
-      paidAt,
-      collectionName: 'licenses',
-    });
+  email: customerEmail,
+  stripeSessionId,
+  paymentIntentId,
+  paidAt,
+  amountTotal: session.amount_total,
+  currency: session.currency,
+  collectionName: 'licenses',
+});
 
     const transporter = buildTransporter();
     const supportEmail = process.env.SUPPORT_EMAIL || 'contacto@tuappgo.com';
