@@ -10,6 +10,7 @@ const { adminChangeDeviceHandler } = require('./license-admin-change-device');
 const { createCheckoutSessionHandler } = require('./stripe-checkout');
 const { stripeWebhookHandler } = require('./stripe-webhook');
 const { createManualOrderHandler } = require('./manual-payment');
+const { requireAdmin, listManualOrders, completeManualOrder, adminPageHandler } = require('./admin-panel');
 
 
 require('dotenv').config();
@@ -98,6 +99,12 @@ app.post('/api/pago/manual/crear', createManualOrderHandler);
 app.post('/api/licencia/activar', activateLicenseHandler);
 app.post('/api/licencia/recuperar', recoverLicenseHandler);
 app.post('/api/admin/licencia/cambiar-dispositivo', adminChangeDeviceHandler);
+// --- Admin panel (solo backend) ---
+app.get('/admin', adminPageHandler);
+
+// APIs admin protegidas por x-admin-key
+app.get('/api/admin/manual-orders', requireAdmin, listManualOrders);
+app.post('/api/admin/manual-orders/:id/complete', requireAdmin, completeManualOrder);
 
 
 // --- Utilidades licencia ---
@@ -348,6 +355,7 @@ app.listen(PORT, () => {
   console.log(`   - Health Firestore: GET http://localhost:${PORT}/api/health/firestore`);
   console.log(`   - Licencia validar: POST http://localhost:${PORT}/api/licencia/validar`);
 });
+
 
 
 
