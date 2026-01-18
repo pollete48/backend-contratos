@@ -179,7 +179,7 @@ const emailSignatureHtml = `
 
   <div style="margin-top:20px; font-family:Arial, sans-serif; font-size:13px; color:#555;">
     <img
-      src="https://tuappgo.com/assets/logo-tuappgo.png"
+      src="https://tuappgo.com/contratos/assets/logo-tuappgo.png"
       alt="TuAppGo"
       style="height:40px; margin-bottom:10px;"
     />
@@ -243,5 +243,6 @@ await transporter.sendMail({
 }
 
 module.exports = { stripeWebhookHandler };
+
 
 
