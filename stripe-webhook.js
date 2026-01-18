@@ -25,7 +25,13 @@ function buildTransporter() {
 }
 
 function formatDateES(date) {
-  return new Date(date).toLocaleDateString('es-ES', {
+  const d = date?.toDate
+    ? date.toDate()
+    : (date instanceof Date ? date : new Date(date));
+
+  if (Number.isNaN(d.getTime())) return '—';
+
+  return d.toLocaleDateString('es-ES', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -208,3 +214,4 @@ async function stripeWebhookHandler(req, res) {
 }
 
 module.exports = { stripeWebhookHandler };
+
