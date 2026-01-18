@@ -173,13 +173,42 @@ async function stripeWebhookHandler(req, res) {
     });
 
     try {
-  await transporter.sendMail({
-    from: requireEnv('SMTP_FROM'),
-    to: customerEmail.trim(),
-    subject: mail.subject,
-    text: mail.text,
-    html: mail.html,
-  });
+  // --- Firma HTML TuAppGo ---
+const emailSignatureHtml = `
+  <hr style="margin-top:30px; border:none; border-top:1px solid #e0e0e0;" />
+
+  <div style="margin-top:20px; font-family:Arial, sans-serif; font-size:13px; color:#555;">
+    <img
+      src="https://tuappgo.com/assets/logo-tuappgo.png"
+      alt="TuAppGo"
+      style="height:40px; margin-bottom:10px;"
+    />
+
+    <div style="margin-top:8px;">
+      <strong>TuAppGo</strong><br />
+      Automatización de contratos y documentos<br />
+      <a href="https://tuappgo.com" style="color:#2a6edb; text-decoration:none;">
+        https://tuappgo.com
+      </a><br />
+      <span style="color:#777;">contacto@tuappgo.com</span>
+    </div>
+  </div>
+`;
+
+// --- HTML final del email (contenido + firma) ---
+const finalHtml = `
+  ${mail.html}
+  ${emailSignatureHtml}
+`;
+
+// --- Envío del email ---
+await transporter.sendMail({
+  from: requireEnv('SMTP_FROM'),
+  to: customerEmail.trim(),
+  subject: mail.subject,
+  text: mail.text,
+  html: finalHtml,
+});
 } catch (mailErr) {
   // El email NO debe romper el webhook
   await eventRef.set(
@@ -214,4 +243,5 @@ async function stripeWebhookHandler(req, res) {
 }
 
 module.exports = { stripeWebhookHandler };
+
 
