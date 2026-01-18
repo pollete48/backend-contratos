@@ -43,7 +43,7 @@ function buildPurchaseEmail({ code, expiresAt, supportEmail }) {
   return {
     subject: 'Tu licencia de TuAppGo',
     text:
-`Gracias por tu compra.
+`Tuappgo te agradece tu confianza por tu compra.
 
 Tu código de licencia:
 ${code}
@@ -62,7 +62,7 @@ Importante:
 Soporte: ${supportEmail}
 `,
     html:
-`<p>Gracias por tu compra.</p>
+`<p>Tuappgo te agradece tu confianza por tu compra.</p>
 <p><strong>Tu código de licencia:</strong><br>
 <span style="font-size:18px;letter-spacing:1px;">${code}</span></p>
 <p><strong>Válida hasta:</strong> ${expires}</p>
@@ -243,6 +243,7 @@ await transporter.sendMail({
 }
 
 module.exports = { stripeWebhookHandler };
+
 
 
 
