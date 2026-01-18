@@ -9,6 +9,8 @@ const { recoverLicenseHandler } = require('./license-recover');
 const { adminChangeDeviceHandler } = require('./license-admin-change-device');
 const { createCheckoutSessionHandler } = require('./stripe-checkout');
 const { stripeWebhookHandler } = require('./stripe-webhook');
+const { createManualOrderHandler } = require('./manual-payment');
+
 
 require('dotenv').config();
 
@@ -90,11 +92,13 @@ app.use(express.json());
 
 // --- Stripe: checkout ---
 app.post('/api/stripe/checkout', createCheckoutSessionHandler);
+app.post('/api/pago/manual/crear', createManualOrderHandler);
 
 // --- Licencias: activar y recuperar ---
 app.post('/api/licencia/activar', activateLicenseHandler);
 app.post('/api/licencia/recuperar', recoverLicenseHandler);
 app.post('/api/admin/licencia/cambiar-dispositivo', adminChangeDeviceHandler);
+
 
 // --- Utilidades licencia ---
 function normalizarCodigo(codigo) {
@@ -344,5 +348,6 @@ app.listen(PORT, () => {
   console.log(`   - Health Firestore: GET http://localhost:${PORT}/api/health/firestore`);
   console.log(`   - Licencia validar: POST http://localhost:${PORT}/api/licencia/validar`);
 });
+
 
 
