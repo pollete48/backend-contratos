@@ -4,11 +4,8 @@
 // Requisitos ENV:
 // - STRIPE_SECRET_KEY
 // - STRIPE_PRICE_ID
-// - CHECKOUT_SUCCESS_URL    (ej: https://tuappgo.com/contratos/#/pago-ok)
-// - CHECKOUT_CANCEL_URL     (ej: https://tuappgo.com/contratos/#/pago-cancelado)
-//
-// Ruta sugerida:
-//   app.post('/api/stripe/checkout', createCheckoutSessionHandler);
+// - CHECKOUT_SUCCESS_URL    (https://tuappgo.com/contratos/#/pago-ok)
+// - CHECKOUT_CANCEL_URL     (https://tuappgo.com/contratos/#/pago-cancelado)
 
 const Stripe = require('stripe');
 
@@ -26,60 +23,20 @@ function fail(res, status, code, message) {
   return res.status(status).json({ ok: false, code, message });
 }
 
-/**
- * Limpia URL de entorno:
- * - trim
- * - elimina espacios
- * - elimina query ?session_id=... si ya lo hubieran puesto en env
- * - elimina "#" final suelto
- */
-function sanitizeBaseUrl(raw) {
-  const s = String(raw || '').trim();
-
-  // Si alguien metió ?session_id=... en la env, lo quitamos para no duplicarlo
-  const noQuery = s.split('?')[0];
-
-  // Quita un # final suelto (por si alguien puso .../#)
-  const cleaned = noQuery.endsWith('#') ? noQuery.slice(0, -1) : noQuery;
-
-  return cleaned;
-}
-
-/**
- * Construye success_url final añadiendo session_id.
- * Nota: si el success URL contiene "#/ruta", la query va ANTES del #.
- * Stripe suele aceptar ambos, pero esto lo deja correcto:
- *   https://dominio/path?session_id=...#/ruta
- */
-function buildSuccessUrlWithSessionId(successBase) {
-  const base = sanitizeBaseUrl(successBase);
-
-  // Si hay hash, la query debe ir antes del hash
-  const [beforeHash, afterHash] = base.split('#');
-
-  const withQuery = `${beforeHash}?session_id={CHECKOUT_SESSION_ID}`;
-
-  // Si había hash, lo reponemos
-  return afterHash !== undefined ? `${withQuery}#${afterHash}` : withQuery;
-}
-
 async function createCheckoutSessionHandler(req, res) {
   try {
     const PRICE_ID = requireEnv('STRIPE_PRICE_ID');
-    const successEnv = requireEnv('CHECKOUT_SUCCESS_URL');
-    const cancelEnv = requireEnv('CHECKOUT_CANCEL_URL');
+    const successUrlBase = requireEnv('CHECKOUT_SUCCESS_URL');
+    const cancelUrl = requireEnv('CHECKOUT_CANCEL_URL');
 
-    const successUrlFinal = buildSuccessUrlWithSessionId(successEnv);
-    const cancelUrlFinal = sanitizeBaseUrl(cancelEnv);
+    // MUY IMPORTANTE:
+    // El session_id DEBE ir DESPUÉS del hash (#/pago-ok)
+    // para que Angular cargue la página correcta
+    const successUrlFinal = `${successUrlBase}?session_id={CHECKOUT_SESSION_ID}`;
 
-    // LOGS (para ver qué está pasando en Render)
-    console.log('[checkout] CORS Origin:', req.headers.origin || '(no origin)');
-    console.log('[checkout] CHECKOUT_SUCCESS_URL env:', successEnv);
-    console.log('[checkout] CHECKOUT_CANCEL_URL env:', cancelEnv);
     console.log('[checkout] success_url final:', successUrlFinal);
-    console.log('[checkout] cancel_url final:', cancelUrlFinal);
+    console.log('[checkout] cancel_url final:', cancelUrl);
 
-    // Email opcional (si tu app lo pide antes). Si no lo envías, Stripe lo pedirá igualmente.
     const email = String(req.body?.email || '').trim().toLowerCase();
 
     const session = await stripe.checkout.sessions.create({
@@ -89,7 +46,7 @@ async function createCheckoutSessionHandler(req, res) {
       customer_email: email || undefined,
 
       success_url: successUrlFinal,
-      cancel_url: cancelUrlFinal,
+      cancel_url: cancelUrl,
 
       allow_promotion_codes: true,
 
