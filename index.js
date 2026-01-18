@@ -19,6 +19,12 @@ const path = require('path');
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
+
+// ---- CORS ----
+const corsOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 // Si no hay variable, usa una lista segura por defecto
 const allowedOrigins = corsOrigins.length > 0 ? corsOrigins : [
   'https://tuappgo.com',
@@ -338,4 +344,5 @@ app.listen(PORT, () => {
   console.log(`   - Health Firestore: GET http://localhost:${PORT}/api/health/firestore`);
   console.log(`   - Licencia validar: POST http://localhost:${PORT}/api/licencia/validar`);
 });
+
 
