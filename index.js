@@ -28,27 +28,34 @@ const corsOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
-// Si no hay variable, usa una lista segura por defecto
-const allowedOrigins = corsOrigins.length > 0 ? corsOrigins : [
+
+function normalizeOrigin(o) {
+  return String(o || '').trim().replace(/\/+$/, '');
+}
+
+const allowedOrigins = [
   'https://tuappgo.com',
   'https://www.tuappgo.com',
   'http://localhost:8100',
   'http://localhost:4200',
-  'https://backend-contratos-r9zb.onrender.com', 
+  'https://backend-contratos-r9zb.onrender.com',
 ];
 
 app.use(cors({
   origin: (origin, cb) => {
-    // ✅ Permitir llamadas sin Origin (Stripe, webhooks, curl, servidor-servidor)
+    // Permitir llamadas sin Origin (Stripe/servidores/curl)
     if (!origin) return cb(null, true);
 
-    // ✅ Permitir orígenes explícitos
-    if (allowedOrigins.includes(origin)) {
-      return cb(null, true);
-    }
+    const o = normalizeOrigin(origin);
 
-    // ❌ Bloquear el resto
-    return cb(new Error('Not allowed by CORS'));
+    // Permitir tu lista
+    if (allowedOrigins.includes(o)) return cb(null, true);
+
+    // Permitir cualquier subdominio de onrender.com (admin panel en Render)
+    if (o.endsWith('.onrender.com')) return cb(null, true);
+
+    // Bloquear el resto (si quieres, puedes dejarlo abierto también)
+    return cb(new Error('Not allowed by CORS: ' + o));
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
@@ -363,6 +370,7 @@ app.listen(PORT, () => {
   console.log(`   - Health Firestore: GET http://localhost:${PORT}/api/health/firestore`);
   console.log(`   - Licencia validar: POST http://localhost:${PORT}/api/licencia/validar`);
 });
+
 
 
 
