@@ -119,10 +119,11 @@ updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     tx.create(ref, doc);
   });
 
-  return { code, refPath: ref.path };
+  return { code, expiresAt: expiresAtDate, refPath: ref.path };
 }
 
 module.exports = {
   generateUniqueLicenseCode,
   createLicenseFromStripe,
 };
+
