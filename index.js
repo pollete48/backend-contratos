@@ -34,13 +34,21 @@ const allowedOrigins = corsOrigins.length > 0 ? corsOrigins : [
   'https://www.tuappgo.com',
   'http://localhost:8100',
   'http://localhost:4200',
+  'https://backend-contratos-r9zb.onrender.com', 
 ];
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Permitir llamadas sin Origin (Stripe/servidores/curl) y apps nativas
+    // ✅ Permitir llamadas sin Origin (Stripe, webhooks, curl, servidor-servidor)
     if (!origin) return cb(null, true);
-    return allowedOrigins.includes(origin) ? cb(null, true) : cb(new Error('Not allowed by CORS'));
+
+    // ✅ Permitir orígenes explícitos
+    if (allowedOrigins.includes(origin)) {
+      return cb(null, true);
+    }
+
+    // ❌ Bloquear el resto
+    return cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
@@ -355,6 +363,7 @@ app.listen(PORT, () => {
   console.log(`   - Health Firestore: GET http://localhost:${PORT}/api/health/firestore`);
   console.log(`   - Licencia validar: POST http://localhost:${PORT}/api/licencia/validar`);
 });
+
 
 
 
