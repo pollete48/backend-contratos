@@ -19,23 +19,27 @@ const path = require('path');
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
-const corsOrigins = (process.env.CORS_ORIGIN || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+// Si no hay variable, usa una lista segura por defecto
+const allowedOrigins = corsOrigins.length > 0 ? corsOrigins : [
+  'https://tuappgo.com',
+  'https://www.tuappgo.com',
+  'http://localhost:8100',
+  'http://localhost:4200',
+];
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Permitir llamadas sin Origin (curl/postman) y apps nativas
+    // Permitir llamadas sin Origin (Stripe/servidores/curl) y apps nativas
     if (!origin) return cb(null, true);
-
-    // Si no configuras CORS_ORIGIN, se permite todo (modo dev)
-    if (corsOrigins.length === 0) return cb(null, true);
-
-    return corsOrigins.includes(origin) ? cb(null, true) : cb(new Error('Not allowed by CORS'));
+    return allowedOrigins.includes(origin) ? cb(null, true) : cb(new Error('Not allowed by CORS'));
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
+
+// Preflight para cualquier ruta
+app.options('*', cors());
 
 // --- Firebase Admin (Firestore) ---
 let db = null;
@@ -334,3 +338,4 @@ app.listen(PORT, () => {
   console.log(`   - Health Firestore: GET http://localhost:${PORT}/api/health/firestore`);
   console.log(`   - Licencia validar: POST http://localhost:${PORT}/api/licencia/validar`);
 });
+
