@@ -77,7 +77,7 @@ async function createCheckoutSessionHandler(req, res) {
     const successBase = normalizeToContratosHashRoute(successEnv);
     const cancelBase = normalizeToContratosHashRoute(cancelEnv);
 
-    const successUrlFinal = addSessionIdToHashRoute(successBase);
+    const successUrlFinal = `${successBase}?from=BACKEND_V2&session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrlFinal = cancelBase;
 
     // LOGS CLAROS
@@ -109,3 +109,4 @@ async function createCheckoutSessionHandler(req, res) {
 }
 
 module.exports = { createCheckoutSessionHandler };
+
