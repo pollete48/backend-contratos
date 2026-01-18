@@ -106,12 +106,19 @@ async function listManualOrders(req, res) {
 
     const status = String(req.query?.status || 'pending');
     const q = db.collection('manual_orders')
-      .where('status', '==', status)
-      .orderBy('createdAt', 'desc')
-      .limit(200);
+  .where('status', '==', status)
+  .limit(200);
 
-    const snap = await q.get();
-    const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+const snap = await q.get();
+
+let items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+// Ordenamos aquí (sin forzar índice en Firestore)
+items.sort((a, b) => {
+  const aSec = a?.createdAt?._seconds ?? 0;
+  const bSec = b?.createdAt?._seconds ?? 0;
+  return bSec - aSec;
+});
 
     return res.json({ ok: true, items, priceEur: getPriceEur() });
   } catch (err) {
