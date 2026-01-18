@@ -43,7 +43,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key'],
 }));
 
 // Preflight para cualquier ruta
@@ -348,6 +348,7 @@ app.listen(PORT, () => {
   console.log(`   - Health Firestore: GET http://localhost:${PORT}/api/health/firestore`);
   console.log(`   - Licencia validar: POST http://localhost:${PORT}/api/licencia/validar`);
 });
+
 
 
 
