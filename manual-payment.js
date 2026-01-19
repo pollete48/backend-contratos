@@ -21,7 +21,7 @@ async function createManualOrderHandler(req, res) {
 
     const metodo = safeTrim(req.body?.metodo).toLowerCase(); // 'bizum' | 'transferencia'
     const email = safeTrim(req.body?.email);
-    const uuid = safeTrim(req.body?.uuid); // opcional
+    const uuid = safeTrim(req.body?.uuid);
     const producto = safeTrim(req.body?.producto || 'contratos');
 
     if (!['bizum', 'transferencia'].includes(metodo)) {
@@ -31,16 +31,13 @@ async function createManualOrderHandler(req, res) {
       return res.status(400).json({ ok: false, code: 'INVALID_EMAIL' });
     }
 
-    // ✅ Importe oficial: SIEMPRE desde Render (PRICE_EUR).
-    // Si por algún motivo no está configurado, caemos a lo que mande el cliente (pero lo normal es que NO ocurra).
-    const priceEnv = getPriceEurFromEnv();
-    const fallback = Number(req.body?.amount || 0);
-    const amount = priceEnv > 0 ? priceEnv : (Number.isFinite(fallback) ? fallback : 0);
+    // ✅ IMPORTE OFICIAL (Render)
+    const envPrice = getPriceEurFromEnv();
+    const amount = envPrice > 0 ? envPrice : 0;
 
     const prefix = metodo === 'bizum' ? 'TUAPP-BIZ' : 'TUAPP-TRF';
     const referencia = genReferencia(prefix);
 
-    // Datos visibles al usuario (desde variables de entorno)
     const bizumPhone = safeTrim(process.env.BIZUM_PHONE);
     const bankIban = safeTrim(process.env.BANK_IBAN);
     const bankHolder = safeTrim(process.env.BANK_HOLDER);
@@ -52,6 +49,9 @@ async function createManualOrderHandler(req, res) {
     if (metodo === 'transferencia' && !bankIban) {
       return res.status(500).json({ ok: false, code: 'BANK_IBAN_NOT_SET' });
     }
+    if (amount <= 0) {
+      return res.status(500).json({ ok: false, code: 'PRICE_EUR_NOT_SET' });
+    }
 
     const now = admin.firestore.FieldValue.serverTimestamp();
 
@@ -60,7 +60,7 @@ async function createManualOrderHandler(req, res) {
       email: email.toLowerCase(),
       uuid: uuid || null,
       producto,
-      amount,                 // ✅ precio real
+      amount,
       currency: 'EUR',
       referencia,
       status: 'pending',
@@ -70,24 +70,13 @@ async function createManualOrderHandler(req, res) {
 
     const ref = await db.collection('manual_orders').add(doc);
 
-    // Instrucciones que ve el usuario
-    const instruccionesBase = {
-      metodo,
-      referencia,
-      amount,      // ✅ devolvemos importe para UI
-      currency: 'EUR',
-    };
-
+    const base = { metodo, referencia, amount, currency: 'EUR' };
     const instrucciones =
       metodo === 'bizum'
-        ? { ...instruccionesBase, bizumPhone }
-        : { ...instruccionesBase, bankIban, bankHolder, bankConceptHint };
+        ? { ...base, bizumPhone }
+        : { ...base, bankIban, bankHolder, bankConceptHint };
 
-    return res.json({
-      ok: true,
-      orderId: ref.id,
-      instrucciones,
-    });
+    return res.json({ ok: true, orderId: ref.id, instrucciones });
   } catch (err) {
     console.error('❌ createManualOrderHandler error:', err);
     return res.status(500).json({ ok: false, code: 'SERVER_ERROR' });
@@ -95,4 +84,3 @@ async function createManualOrderHandler(req, res) {
 }
 
 module.exports = { createManualOrderHandler };
-
