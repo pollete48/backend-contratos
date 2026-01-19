@@ -120,7 +120,10 @@ app.get('/admin', adminPageHandler);
 // APIs admin protegidas por x-admin-key
 app.get('/api/admin/manual-orders', requireAdmin, listManualOrders);
 app.post('/api/admin/manual-orders/:id/complete', requireAdmin, completeManualOrder);
-
+app.get('/api/precio', (req, res) => {
+  const p = Number(process.env.PRICE_EUR || 0);
+  res.json({ ok: true, priceEur: Number.isFinite(p) ? p : 0, currency: 'EUR' });
+});
 
 // --- Utilidades licencia ---
 function normalizarCodigo(codigo) {
@@ -370,6 +373,7 @@ app.listen(PORT, () => {
   console.log(`   - Health Firestore: GET http://localhost:${PORT}/api/health/firestore`);
   console.log(`   - Licencia validar: POST http://localhost:${PORT}/api/licencia/validar`);
 });
+
 
 
 
