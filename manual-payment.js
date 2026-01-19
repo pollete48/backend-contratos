@@ -1,14 +1,17 @@
 const admin = require('firebase-admin');
 
 function genReferencia(prefix = 'TUAPP') {
-  // Referencia corta, legible y casi única
-  // Ej: TUAPP-BIZ-7K3Q9P
   const rnd = Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
   return `${prefix}-${rnd}`;
 }
 
 function safeTrim(v) {
   return String(v || '').trim();
+}
+
+function getPriceEurFromEnv() {
+  const p = Number(process.env.PRICE_EUR || 0);
+  return Number.isFinite(p) && p > 0 ? p : 0;
 }
 
 async function createManualOrderHandler(req, res) {
@@ -18,9 +21,8 @@ async function createManualOrderHandler(req, res) {
 
     const metodo = safeTrim(req.body?.metodo).toLowerCase(); // 'bizum' | 'transferencia'
     const email = safeTrim(req.body?.email);
-    const uuid = safeTrim(req.body?.uuid); // opcional pero útil
+    const uuid = safeTrim(req.body?.uuid); // opcional
     const producto = safeTrim(req.body?.producto || 'contratos');
-    const amount = Number(req.body?.amount || 0);
 
     if (!['bizum', 'transferencia'].includes(metodo)) {
       return res.status(400).json({ ok: false, code: 'INVALID_METHOD' });
@@ -29,14 +31,20 @@ async function createManualOrderHandler(req, res) {
       return res.status(400).json({ ok: false, code: 'INVALID_EMAIL' });
     }
 
+    // ✅ Importe oficial: SIEMPRE desde Render (PRICE_EUR).
+    // Si por algún motivo no está configurado, caemos a lo que mande el cliente (pero lo normal es que NO ocurra).
+    const priceEnv = getPriceEurFromEnv();
+    const fallback = Number(req.body?.amount || 0);
+    const amount = priceEnv > 0 ? priceEnv : (Number.isFinite(fallback) ? fallback : 0);
+
     const prefix = metodo === 'bizum' ? 'TUAPP-BIZ' : 'TUAPP-TRF';
     const referencia = genReferencia(prefix);
 
-    // Datos de pago desde variables de entorno (Render)
+    // Datos visibles al usuario (desde variables de entorno)
     const bizumPhone = safeTrim(process.env.BIZUM_PHONE);
     const bankIban = safeTrim(process.env.BANK_IBAN);
     const bankHolder = safeTrim(process.env.BANK_HOLDER);
-    const bankConceptHint = safeTrim(process.env.BANK_CONCEPT_HINT); // opcional
+    const bankConceptHint = safeTrim(process.env.BANK_CONCEPT_HINT);
 
     if (metodo === 'bizum' && !bizumPhone) {
       return res.status(500).json({ ok: false, code: 'BIZUM_PHONE_NOT_SET' });
@@ -52,23 +60,28 @@ async function createManualOrderHandler(req, res) {
       email: email.toLowerCase(),
       uuid: uuid || null,
       producto,
-      amount: Number.isFinite(amount) ? amount : 0,
+      amount,                 // ✅ precio real
       currency: 'EUR',
       referencia,
-      status: 'pending', // pending -> (manual) paid -> license_sent
+      status: 'pending',
       createdAt: now,
       updatedAt: now,
     };
 
     const ref = await db.collection('manual_orders').add(doc);
 
-    const instrucciones = {
+    // Instrucciones que ve el usuario
+    const instruccionesBase = {
       metodo,
       referencia,
-      ...(metodo === 'bizum'
-        ? { bizumPhone }
-        : { bankIban, bankHolder, bankConceptHint }),
+      amount,      // ✅ devolvemos importe para UI
+      currency: 'EUR',
     };
+
+    const instrucciones =
+      metodo === 'bizum'
+        ? { ...instruccionesBase, bizumPhone }
+        : { ...instruccionesBase, bankIban, bankHolder, bankConceptHint };
 
     return res.json({
       ok: true,
@@ -82,3 +95,4 @@ async function createManualOrderHandler(req, res) {
 }
 
 module.exports = { createManualOrderHandler };
+
