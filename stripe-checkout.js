@@ -4,9 +4,8 @@
 // Requisitos ENV:
 // - STRIPE_SECRET_KEY
 // - STRIPE_PRICE_ID
-// - STRIPE_IVA_ID
-// - CHECKOUT_SUCCESS_URL
-// - CHECKOUT_CANCEL_URL
+// - CHECKOUT_SUCCESS_URL    (ej: https://tuappgo.com/contratos/#/pago-ok)
+// - CHECKOUT_CANCEL_URL      (ej: https://tuappgo.com/contratos/#/pago-cancelado)
 //
 // Ruta sugerida:
 //    app.post('/api/stripe/checkout', createCheckoutSessionHandler);
@@ -48,6 +47,9 @@ function sanitizeBaseUrl(raw) {
 
 /**
  * Construye success_url final añadiendo session_id.
+ * Nota: si el success URL contiene "#/ruta", la query va ANTES del #.
+ * Stripe suele aceptar ambos, pero esto lo deja correcto:
+ * https://dominio/path?session_id=...#/ruta
  */
 function buildSuccessUrlWithSessionId(successBase) {
   const base = sanitizeBaseUrl(successBase);
@@ -64,43 +66,31 @@ function buildSuccessUrlWithSessionId(successBase) {
 async function createCheckoutSessionHandler(req, res) {
   try {
     const PRICE_ID = requireEnv('STRIPE_PRICE_ID');
-    const IVA_ID = requireEnv('STRIPE_IVA_ID');
     const successEnv = requireEnv('CHECKOUT_SUCCESS_URL');
     const cancelEnv = requireEnv('CHECKOUT_CANCEL_URL');
 
     const successUrlFinal = buildSuccessUrlWithSessionId(successEnv);
     const cancelUrlFinal = sanitizeBaseUrl(cancelEnv);
 
-    // LOGS para verificar en Render
-    console.log('[checkout] Creando sesión con IVA:', IVA_ID);
-
-    // Email opcional
+    // Email opcional (si viene en el body)
     const email = String(req.body?.email || '').trim().toLowerCase();
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
-      line_items: [{ 
-        price: PRICE_ID, 
-        quantity: 1,
-        // Aplicamos el IVA de forma explícita
-        tax_rates: [IVA_ID] 
-      }],
-      
-      // Aplicamos el Cupón manual 'retencion_irpf'
-      // IMPORTANTE: Se elimina allow_promotion_codes para evitar errores de API
-      discounts: [{
-        coupon: 'retencion_irpf', 
-      }],
+      line_items: [{ price: PRICE_ID, quantity: 1 }],
 
       customer_email: email || undefined,
 
-      // Activamos la generación de factura para ver el desglose en el PDF
+      // Activamos la creación de factura (invoice) por si quieres que Stripe también genere su PDF básico
       invoice_creation: {
         enabled: true,
       },
 
       success_url: successUrlFinal,
       cancel_url: cancelUrlFinal,
+
+      // Permitir cupones (opcional, si quieres usar códigos de descuento de Stripe)
+      allow_promotion_codes: true,
 
       metadata: {
         product: 'tuappgo-licencia-anual',
