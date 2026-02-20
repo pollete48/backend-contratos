@@ -1,3 +1,4 @@
+// manual-payment.js
 const admin = require('firebase-admin');
 
 function genReferencia(prefix = 'TUAPP') {
@@ -10,6 +11,7 @@ function safeTrim(v) {
 }
 
 function getPriceEurFromEnv() {
+  // Ahora el precio oficial incluye el total con IVA y Retención (148,20)
   const p = Number(process.env.PRICE_EUR || 0);
   return Number.isFinite(p) && p > 0 ? p : 0;
 }
@@ -31,7 +33,7 @@ async function createManualOrderHandler(req, res) {
       return res.status(400).json({ ok: false, code: 'INVALID_EMAIL' });
     }
 
-    // ✅ IMPORTE OFICIAL (Render)
+    // ✅ IMPORTE OFICIAL (Debe ser 148,20 en Render)
     const envPrice = getPriceEurFromEnv();
     const amount = envPrice > 0 ? envPrice : 0;
 
@@ -66,6 +68,9 @@ async function createManualOrderHandler(req, res) {
       status: 'pending',
       createdAt: now,
       updatedAt: now,
+      // Guardamos porcentajes actuales para la futura factura
+      ivaPerc: parseFloat(process.env.IVA_PORCENTAJE || '21'),
+      retPerc: parseFloat(process.env.RETENCION_PORCENTAJE || '7')
     };
 
     const ref = await db.collection('manual_orders').add(doc);
