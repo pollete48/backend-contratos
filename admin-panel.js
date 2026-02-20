@@ -150,32 +150,33 @@ function getBaseImponible() {
   return Number.isFinite(b) ? b : 130.00;
 }
 
-async function listManualOrders(req, res) {
+/**
+ * SUPER-FUNCIÓN UNIFICADA (Resuelve el problema de rutas separadas)
+ */
+async function getDashboardData(req, res) {
   try {
     const db = req.app?.locals?.db;
     if (!db) return res.status(503).json({ ok: false, code: 'FIRESTORE_NOT_READY' });
-    const status = String(req.query?.status || 'pending');
-    const q = db.collection('manual_orders').where('status', '==', status).limit(200);
-    const snap = await q.get();
-    let items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    items.sort((a, b) => (b?.createdAt?._seconds ?? 0) - (a?.createdAt?._seconds ?? 0));
-    return res.json({ ok: true, items, priceEur: getPriceEur() });
-  } catch (err) {
-    console.error('❌ listManualOrders', err);
-    return res.status(500).json({ ok: false, code: 'SERVER_ERROR' });
-  }
-}
 
-async function listInvoices(req, res) {
-  try {
-    const db = req.app?.locals?.db;
-    if (!db) return res.status(503).json({ ok: false, code: 'FIRESTORE_NOT_READY' });
-    const snap = await db.collection('invoices').orderBy('date', 'desc').limit(500).get();
-    const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    // IMPORTANTE: Devolvemos el mismo formato que los pedidos manuales
-    return res.json({ ok: true, items });
+    // 1. Cargar Pedidos Manuales (Pendientes por defecto)
+    const status = String(req.query?.status || 'pending');
+    const ordersSnap = await db.collection('manual_orders').where('status', '==', status).limit(100).get();
+    const orders = ordersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    orders.sort((a, b) => (b?.createdAt?._seconds ?? 0) - (a?.createdAt?._seconds ?? 0));
+
+    // 2. Cargar Libro de Facturas
+    const invoicesSnap = await db.collection('invoices').orderBy('date', 'desc').limit(200).get();
+    const invoices = invoicesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    // 3. Enviar TODO en un solo paquete
+    return res.json({ 
+      ok: true, 
+      orders: orders,
+      invoices: invoices,
+      priceEur: getPriceEur()
+    });
   } catch (err) {
-    console.error('❌ listInvoices', err);
+    console.error('❌ getDashboardData', err);
     return res.status(500).json({ ok: false, code: 'SERVER_ERROR', error: err.message });
   }
 }
@@ -320,11 +321,11 @@ function adminHtmlPage() {
 <main>
   <div id="view-orders">
     <div class="card row">
-      <select id="status" onchange="loadOrders()">
+      <select id="status" onchange="loadDashboard()">
         <option value="pending">Pendientes</option>
         <option value="license_sent">Enviadas</option>
       </select>
-      <button class="btn" onclick="loadOrders()">Refrescar</button>
+      <button class="btn" onclick="loadDashboard()">Refrescar Todo</button>
     </div>
     <div class="card" style="overflow-x:auto;">
       <table id="table-orders">
@@ -336,7 +337,7 @@ function adminHtmlPage() {
 
   <div id="view-invoices" class="hidden">
     <div class="card row">
-      <button class="btn" onclick="loadInvoices()">Actualizar Libro</button>
+      <button class="btn" onclick="loadDashboard()">Actualizar Todo</button>
       <button class="btn-csv" onclick="exportCSV()">Exportar CSV (Hacienda)</button>
     </div>
     <div class="card" style="overflow-x:auto;">
@@ -354,17 +355,15 @@ function adminHtmlPage() {
 <script>
   const KEY_LS = 'tuappgo_admin_key';
   document.getElementById('key').value = localStorage.getItem(KEY_LS) || '';
+  let globalInvoices = [];
 
-  function saveKey(){ 
-    localStorage.setItem(KEY_LS, document.getElementById('key').value.trim()); 
-  }
+  function saveKey(){ localStorage.setItem(KEY_LS, document.getElementById('key').value.trim()); }
 
   function showTab(t){
     document.getElementById('view-orders').classList.toggle('hidden', t!=='orders');
     document.getElementById('view-invoices').classList.toggle('hidden', t!=='invoices');
     document.getElementById('tab-orders').classList.toggle('active', t==='orders');
     document.getElementById('tab-invoices').classList.toggle('active', t==='invoices');
-    if(t==='invoices') loadInvoices();
   }
 
   async function api(path, opts={}){
@@ -376,94 +375,81 @@ function adminHtmlPage() {
     return j;
   }
 
-  async function loadOrders(){
-    const rows = document.getElementById('rows-orders');
-    rows.innerHTML = '<tr><td colspan="5">Cargando...</td></tr>';
-    try {
-      const j = await api('/api/admin/manual-orders?status=' + document.getElementById('status').value);
-      if(!j.items || j.items.length === 0) {
-        rows.innerHTML = '<tr><td colspan="5">No hay pedidos.</td></tr>';
-        return;
-      }
-      rows.innerHTML = j.items.map(o => \`<tr>
-        <td>\${new Date(o.createdAt._seconds*1000).toLocaleString()}</td>
-        <td>\${o.metodo || '—'}</td>
-        <td>\${o.email}</td>
-        <td>\${o.referencia || '—'}</td>
-        <td>\${o.status==='pending' ? '<button class="btn2" onclick="complete(\\''+o.id+'\\')">Confirmar</button>':''}</td>
-      </tr>\`).join('');
-    } catch(e){ rows.innerHTML = '<tr><td colspan="5" style="color:red;">Error: '+e.message+'</td></tr>'; }
-  }
+  async function loadDashboard(){
+    const rowsOrders = document.getElementById('rows-orders');
+    const rowsInvoices = document.getElementById('rows-invoices');
+    const footInvoices = document.getElementById('foot-invoices');
+    
+    rowsOrders.innerHTML = '<tr><td colspan="5">Cargando datos...</td></tr>';
+    rowsInvoices.innerHTML = '<tr><td colspan="8">Cargando datos...</td></tr>';
 
-  async function loadInvoices(){
-    const rows = document.getElementById('rows-invoices');
-    const foot = document.getElementById('foot-invoices');
-    rows.innerHTML = '<tr><td colspan="8">Cargando facturas...</td></tr>';
     try {
-      const j = await api('/api/admin/invoices');
-      if(!j.items || j.items.length === 0) {
-        rows.innerHTML = '<tr><td colspan="8">El libro de facturas está vacío.</td></tr>';
-        foot.innerHTML = '';
-        return;
+      // LLAMADA ÚNICA A LA SUPER-RUTA
+      const j = await api('/api/admin/dashboard?status=' + document.getElementById('status').value);
+      
+      // 1. PINTAR PEDIDOS
+      if(!j.orders || j.orders.length === 0) {
+        rowsOrders.innerHTML = '<tr><td colspan="5">No hay pedidos.</td></tr>';
+      } else {
+        rowsOrders.innerHTML = j.orders.map(o => \`<tr>
+          <td>\${new Date(o.createdAt._seconds*1000).toLocaleString()}</td>
+          <td>\${o.metodo || '—'}</td><td>\${o.email}</td><td>\${o.referencia || '—'}</td>
+          <td>\${o.status==='pending' ? '<button class="btn2" onclick="complete(\\''+o.id+'\\')">Confirmar</button>':''}</td>
+        </tr>\`).join('');
       }
-      let totals = {base:0, iva:0, ret:0, total:0};
-      rows.innerHTML = j.items.map(i => {
-        totals.base += i.base || 0;
-        totals.iva += i.iva || 0;
-        totals.ret += i.ret || 0;
-        totals.total += i.total || 0;
-        const fechaStr = i.date && i.date._seconds ? new Date(i.date._seconds*1000).toLocaleDateString() : '—';
-        return \`<tr>
-          <td>\${i.invoiceNumber || '—'}</td>
-          <td>\${fechaStr}</td>
-          <td>\${i.email || '—'}</td>
-          <td>\${(i.base || 0).toFixed(2)}</td>
-          <td>\${(i.iva || 0).toFixed(2)}</td>
-          <td>-\${(i.ret || 0).toFixed(2)}</td>
-          <td style="color:#22c55e; font-weight:bold;">\${(i.total || 0).toFixed(2)}</td>
-          <td><span style="text-transform:uppercase; font-size:10px;" class="pill">\${i.method || 'manual'}</span></td>
-        </tr>\`;
-      }).join('');
 
-      foot.innerHTML = \`<tr>
-        <td colspan="3">TOTALES DEL PERÍODO</td>
-        <td>\${totals.base.toFixed(2)}€</td>
-        <td>\${totals.iva.toFixed(2)}€</td>
-        <td>-\${totals.ret.toFixed(2)}€</td>
-        <td style="color:#22c55e;">\${totals.total.toFixed(2)}€</td>
-        <td></td>
-      </tr>\`;
-      window.lastInvoices = j.items;
-    } catch(e){ rows.innerHTML = '<tr><td colspan="8" style="color:red;">Error: '+e.message+'</td></tr>'; }
+      // 2. PINTAR FACTURAS
+      globalInvoices = j.invoices || [];
+      if(globalInvoices.length === 0) {
+        rowsInvoices.innerHTML = '<tr><td colspan="8">Sin facturas.</td></tr>';
+        footInvoices.innerHTML = '';
+      } else {
+        let totals = {base:0, iva:0, ret:0, total:0};
+        rowsInvoices.innerHTML = globalInvoices.map(i => {
+          totals.base += i.base || 0; totals.iva += i.iva || 0; 
+          totals.ret += i.ret || 0; totals.total += i.total || 0;
+          const fechaStr = i.date && i.date._seconds ? new Date(i.date._seconds*1000).toLocaleDateString() : '—';
+          return \`<tr>
+            <td>\${i.invoiceNumber || '—'}</td><td>\${fechaStr}</td><td>\${i.email || '—'}</td>
+            <td>\${(i.base || 0).toFixed(2)}</td><td>\${(i.iva || 0).toFixed(2)}</td><td>-\${(i.ret || 0).toFixed(2)}</td>
+            <td style="color:#22c55e; font-weight:bold;">\${(i.total || 0).toFixed(2)}</td>
+            <td><span class="pill">\${i.method || 'manual'}</span></td>
+          </tr>\`;
+        }).join('');
+
+        footInvoices.innerHTML = \`<tr><td colspan="3">TOTALES</td>
+          <td>\${totals.base.toFixed(2)}€</td><td>\${totals.iva.toFixed(2)}€</td>
+          <td>-\${totals.ret.toFixed(2)}€</td><td style="color:#22c55e;">\${totals.total.toFixed(2)}€</td><td></td></tr>\`;
+      }
+    } catch(e){ 
+      rowsOrders.innerHTML = '<tr><td colspan="5" style="color:red;">Error: '+e.message+'</td></tr>';
+      rowsInvoices.innerHTML = '<tr><td colspan="8" style="color:red;">Error: '+e.message+'</td></tr>';
+    }
   }
 
   async function complete(id){
     if(!confirm('¿Confirmar pago y emitir factura?')) return;
-    try {
-      await api('/api/admin/manual-orders/' + id + '/complete', {method:'POST'});
-      loadOrders();
-    } catch(e){ alert(e.message); }
+    try { await api('/api/admin/manual-orders/' + id + '/complete', {method:'POST'}); loadDashboard(); } 
+    catch(e){ alert(e.message); }
   }
 
   function exportCSV(){
-    if(!window.lastInvoices || window.lastInvoices.length === 0) { alert('No hay datos para exportar'); return; }
+    if(globalInvoices.length === 0) { alert('No hay datos'); return; }
     let csv = "Factura;Fecha;Email;Base;IVA;Retencion;Total;Metodo\\n";
-    window.lastInvoices.forEach(i => {
+    globalInvoices.forEach(i => {
       const f = i.date && i.date._seconds ? new Date(i.date._seconds*1000).toLocaleDateString() : '';
       csv += \`\${i.invoiceNumber || ''};\${f};\${i.email || ''};\${i.base || 0};\${i.iva || 0};\${i.ret || 0};\${i.total || 0};\${i.method || 'manual'}\\n\`;
     });
     const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = "libro_facturas_tuappgo.csv";
+    link.download = "libro_facturas.csv";
     link.click();
   }
 
-  // Carga inicial
-  loadOrders();
+  loadDashboard();
 </script>
-</body>
-</html>`;
+</body></html>`;
 }
 
 function adminPageHandler(req, res) {
@@ -471,4 +457,4 @@ function adminPageHandler(req, res) {
   res.send(adminHtmlPage());
 }
 
-module.exports = { requireAdmin, listManualOrders, completeManualOrder, listInvoices, adminPageHandler };
+module.exports = { requireAdmin, getDashboardData, completeManualOrder, adminPageHandler };
