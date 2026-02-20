@@ -1,5 +1,6 @@
 const Stripe = require('stripe');
 const nodemailer = require('nodemailer');
+const htmlPdf = require('html-pdf-node'); // Mejora 3: PDF
 const { createLicenseFromStripe } = require('./license-issue');
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
@@ -63,12 +64,14 @@ function buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData }) {
     email: process.env.EMPRESA_EMAIL || ''
   };
 
+  // Mejora 1: Logo 105px (30% más grande que 80px)
+  // Mejora 2: Disposición vertical descendente
   const facturaHtml = `
-    <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px; color:#333;">
+    <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px; color:#333; max-width: 500px;">
       <table style="width:100%;">
         <tr>
           <td style="vertical-align:top;">
-            <img src="https://tuappgo.com/contratos/assets/logo-tuappgo.png" alt="TuAppGo" style="height:60px;">
+            <img src="https://tuappgo.com/contratos/assets/logo-tuappgo.png" alt="TuAppGo" style="height:105px;">
           </td>
           <td style="text-align:right; font-size:12px; color:#555;">
             <strong>EMISOR:</strong><br>${emisor.nombre}<br>${emisor.dni}<br>${emisor.dir}<br>${emisor.tel}
@@ -79,25 +82,23 @@ function buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData }) {
         <h3 style="margin-bottom:5px;">FACTURA: ${invoiceData.numero}</h3>
         <p style="font-size:13px; margin-top:0;">Fecha: ${invoiceData.fecha}</p>
       </div>
-      <table style="width:100%; border-collapse:collapse; margin-top:15px; font-size:14px;">
-        <thead>
-          <tr style="background:#f4f4f4;">
-            <th style="padding:10px; border:1px solid #ddd; text-align:left;">Concepto</th>
-            <th style="padding:10px; border:1px solid #ddd; text-align:right;">Base</th>
-            <th style="padding:10px; border:1px solid #ddd; text-align:right;">IVA</th>
-            <th style="padding:10px; border:1px solid #ddd; text-align:right;">IRPF</th>
-            <th style="padding:10px; border:1px solid #ddd; text-align:right;">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td style="padding:10px; border:1px solid #ddd;">Licencia App Generación de Contratos (Acceso 1 año)</td>
-            <td style="padding:10px; border:1px solid #ddd; text-align:right;">${invoiceData.base}€</td>
-            <td style="padding:10px; border:1px solid #ddd; text-align:right;">${invoiceData.iva}€</td>
-            <td style="padding:10px; border:1px solid #ddd; text-align:right; color:#d9534f;">-${invoiceData.ret}€</td>
-            <td style="padding:10px; border:1px solid #ddd; text-align:right; font-weight:bold;">${invoiceData.total}€</td>
-          </tr>
-        </tbody>
+      <table style="width:100%; border-collapse:collapse; margin-top:15px; font-size:15px;">
+        <tr>
+          <td style="padding:10px; border-bottom:1px solid #eee;">Base Imponible</td>
+          <td style="padding:10px; border-bottom:1px solid #eee; text-align:right;">${invoiceData.base}€</td>
+        </tr>
+        <tr>
+          <td style="padding:10px; border-bottom:1px solid #eee;">IVA (${invoiceData.ivaPerc}%)</td>
+          <td style="padding:10px; border-bottom:1px solid #eee; text-align:right;">${invoiceData.iva}€</td>
+        </tr>
+        <tr>
+          <td style="padding:10px; border-bottom:1px solid #eee;">Retención IRPF (-${invoiceData.retPerc}%)</td>
+          <td style="padding:10px; border-bottom:1px solid #eee; text-align:right; color:#d9534f;">-${invoiceData.ret}€</td>
+        </tr>
+        <tr style="font-weight:bold; background:#f9f9f9;">
+          <td style="padding:10px; font-size:1.1em;">TOTAL</td>
+          <td style="padding:10px; text-align:right; font-size:1.1em; color:#28a745;">${invoiceData.total}€</td>
+        </tr>
       </table>
     </div>`;
 
@@ -111,9 +112,11 @@ function buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData }) {
         <span style="font-size:18px;letter-spacing:1px; color:#2a6edb;">${code}</span></p>
         <p><strong>Válida hasta:</strong> ${expires}</p>
         <p><strong>Cómo activar:</strong> Abre la app, ve a Ajustes → Licencia, pega el código y activa.</p>
+        <p>Adjuntamos su factura detallada en formato PDF.</p>
         ${facturaHtml}
         <p style="margin-top:20px; font-size:12px; color:#777;">Soporte: ${supportEmail}</p>
-      </div>`
+      </div>`,
+    facturaSoloHtml: `<html><body>${facturaHtml}</body></html>`
   };
 }
 
@@ -192,10 +195,16 @@ async function stripeWebhookHandler(req, res) {
       iva: (130 * (ivaPerc / 100)).toFixed(2).replace('.', ','),
       ret: (130 * (retPerc / 100)).toFixed(2).replace('.', ','),
       total: totalRaw.replace('.', ','),
+      ivaPerc,
+      retPerc
     };
 
     const supportEmail = process.env.SUPPORT_EMAIL || 'contacto@tuappgo.com';
     const mailContent = buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData });
+
+    // Mejora 3: Generar PDF
+    const options = { format: 'A4' };
+    const pdfBuffer = await htmlPdf.generatePdf({ content: mailContent.facturaSoloHtml }, options);
 
     const transporter = buildTransporter();
     await transporter.sendMail({
@@ -203,7 +212,11 @@ async function stripeWebhookHandler(req, res) {
       to: customerEmail.trim(),
       subject: mailContent.subject,
       text: mailContent.text,
-      html: mailContent.html
+      html: mailContent.html,
+      attachments: [{
+        filename: `Factura_${numFactura.replace('/', '-')}.pdf`,
+        content: pdfBuffer
+      }]
     });
 
     await eventRef.set({ status: 'processed', processedAt: new Date(), licenseCode: code, invoice: numFactura }, { merge: true });
