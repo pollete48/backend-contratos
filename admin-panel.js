@@ -169,11 +169,14 @@ async function listManualOrders(req, res) {
 async function listInvoices(req, res) {
   try {
     const db = req.app?.locals?.db;
+    if (!db) return res.status(503).json({ ok: false, code: 'FIRESTORE_NOT_READY' });
     const snap = await db.collection('invoices').orderBy('date', 'desc').limit(500).get();
     const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // IMPORTANTE: Devolvemos el mismo formato que los pedidos manuales
     return res.json({ ok: true, items });
   } catch (err) {
-    return res.status(500).json({ ok: false, error: err.message });
+    console.error('❌ listInvoices', err);
+    return res.status(500).json({ ok: false, code: 'SERVER_ERROR', error: err.message });
   }
 }
 
@@ -285,7 +288,7 @@ function adminHtmlPage() {
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; margin:0; background:#0b1220; color:#e8eefc;}
     header{padding:18px 20px; background:#0f1b33; border-bottom:1px solid rgba(255,255,255,.08); display:flex; justify-content:space-between; align-items:center;}
-    .nav-tabs{display:flex; gap:10px; margin-bottom:20px;}
+    .nav-tabs{display:flex; gap:10px; margin: 20px 18px 10px 18px;}
     .tab{padding:10px 20px; cursor:pointer; border-radius:10px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1);}
     .tab.active{background:#2a6edb; border-color:#2a6edb;}
     main{max-width:1100px; margin:0 auto; padding:18px;}
@@ -299,7 +302,6 @@ function adminHtmlPage() {
     table{width:100%; border-collapse:collapse; margin-top:10px;}
     th,td{padding:10px; border-bottom:1px solid rgba(255,255,255,.08); font-size:13px; text-align:left;}
     th{background:rgba(255,255,255,.03);}
-    .text-right{text-align:right;}
     tfoot{font-weight:bold; background:rgba(255,255,255,.05);}
     .hidden{display:none;}
   </style>
@@ -309,12 +311,13 @@ function adminHtmlPage() {
   <h1>TuAppGo Admin</h1>
   <div id="admin-key-area"><input id="key" type="password" placeholder="ADMIN_KEY" onchange="saveKey()"></div>
 </header>
-<main>
-  <div class="nav-tabs">
-    <div id="tab-orders" class="tab active" onclick="showTab('orders')">Gestión Pedidos</div>
-    <div id="tab-invoices" class="tab" onclick="showTab('invoices')">Libro de Facturas</div>
-  </div>
 
+<div class="nav-tabs">
+  <div id="tab-orders" class="tab active" onclick="showTab('orders')">Gestión Pedidos</div>
+  <div id="tab-invoices" class="tab" onclick="showTab('invoices')">Libro de Facturas</div>
+</div>
+
+<main>
   <div id="view-orders">
     <div class="card row">
       <select id="status" onchange="loadOrders()">
@@ -323,7 +326,7 @@ function adminHtmlPage() {
       </select>
       <button class="btn" onclick="loadOrders()">Refrescar</button>
     </div>
-    <div class="card">
+    <div class="card" style="overflow-x:auto;">
       <table id="table-orders">
         <thead><tr><th>Fecha</th><th>Método</th><th>Email</th><th>Referencia</th><th>Acción</th></tr></thead>
         <tbody id="rows-orders"></tbody>
@@ -336,7 +339,7 @@ function adminHtmlPage() {
       <button class="btn" onclick="loadInvoices()">Actualizar Libro</button>
       <button class="btn-csv" onclick="exportCSV()">Exportar CSV (Hacienda)</button>
     </div>
-    <div class="card">
+    <div class="card" style="overflow-x:auto;">
       <table id="table-invoices">
         <thead>
           <tr><th>Factura</th><th>Fecha</th><th>Email</th><th>Base (€)</th><th>IVA (€)</th><th>Ret (€)</th><th>Total (€)</th><th>Método</th></tr>
@@ -347,10 +350,15 @@ function adminHtmlPage() {
     </div>
   </div>
 </main>
+
 <script>
   const KEY_LS = 'tuappgo_admin_key';
   document.getElementById('key').value = localStorage.getItem(KEY_LS) || '';
-  function saveKey(){ localStorage.setItem(KEY_LS, document.getElementById('key').value.trim()); }
+
+  function saveKey(){ 
+    localStorage.setItem(KEY_LS, document.getElementById('key').value.trim()); 
+  }
+
   function showTab(t){
     document.getElementById('view-orders').classList.toggle('hidden', t!=='orders');
     document.getElementById('view-invoices').classList.toggle('hidden', t!=='invoices');
@@ -358,54 +366,91 @@ function adminHtmlPage() {
     document.getElementById('tab-invoices').classList.toggle('active', t==='invoices');
     if(t==='invoices') loadInvoices();
   }
-  async function api(p, o={}){
-    const h = {'x-admin-key': localStorage.getItem(KEY_LS)};
-    const r = await fetch(p, Object.assign({headers:h}, o));
+
+  async function api(path, opts={}){
+    const key = (localStorage.getItem(KEY_LS) || '').trim();
+    const headers = Object.assign({'x-admin-key': key}, opts.headers || {});
+    const r = await fetch(path, Object.assign({}, opts, {headers}));
     const j = await r.json();
-    if(!r.ok) throw new Error(j.code || j.error || 'Error');
+    if(!r.ok) throw new Error(j.code || j.error || 'ERROR');
     return j;
   }
+
   async function loadOrders(){
-    const rows = document.getElementById('rows-orders'); rows.innerHTML = 'Cargando...';
+    const rows = document.getElementById('rows-orders');
+    rows.innerHTML = '<tr><td colspan="5">Cargando...</td></tr>';
     try {
-      const j = await api('/api/admin/manual-orders?status='+document.getElementById('status').value);
+      const j = await api('/api/admin/manual-orders?status=' + document.getElementById('status').value);
+      if(!j.items || j.items.length === 0) {
+        rows.innerHTML = '<tr><td colspan="5">No hay pedidos.</td></tr>';
+        return;
+      }
       rows.innerHTML = j.items.map(o => \`<tr>
         <td>\${new Date(o.createdAt._seconds*1000).toLocaleString()}</td>
-        <td>\${o.metodo}</td><td>\${o.email}</td><td>\${o.referencia}</td>
+        <td>\${o.metodo || '—'}</td>
+        <td>\${o.email}</td>
+        <td>\${o.referencia || '—'}</td>
         <td>\${o.status==='pending' ? '<button class="btn2" onclick="complete(\\''+o.id+'\\')">Confirmar</button>':''}</td>
       </tr>\`).join('');
-    } catch(e){ alert(e.message); }
+    } catch(e){ rows.innerHTML = '<tr><td colspan="5" style="color:red;">Error: '+e.message+'</td></tr>'; }
   }
+
   async function loadInvoices(){
     const rows = document.getElementById('rows-invoices');
     const foot = document.getElementById('foot-invoices');
+    rows.innerHTML = '<tr><td colspan="8">Cargando facturas...</td></tr>';
     try {
       const j = await api('/api/admin/invoices');
+      if(!j.items || j.items.length === 0) {
+        rows.innerHTML = '<tr><td colspan="8">El libro de facturas está vacío.</td></tr>';
+        foot.innerHTML = '';
+        return;
+      }
       let totals = {base:0, iva:0, ret:0, total:0};
       rows.innerHTML = j.items.map(i => {
-        totals.base += i.base; totals.iva += i.iva; totals.ret += i.ret; totals.total += i.total;
+        totals.base += i.base || 0;
+        totals.iva += i.iva || 0;
+        totals.ret += i.ret || 0;
+        totals.total += i.total || 0;
+        const fechaStr = i.date && i.date._seconds ? new Date(i.date._seconds*1000).toLocaleDateString() : '—';
         return \`<tr>
-          <td>\${i.invoiceNumber}</td><td>\${new Date(i.date._seconds*1000).toLocaleDateString()}</td>
-          <td>\${i.email}</td><td>\${i.base.toFixed(2)}</td><td>\${i.iva.toFixed(2)}</td>
-          <td>-\${i.ret.toFixed(2)}</td><td>\${i.total.toFixed(2)}</td><td>\${i.method}</td>
+          <td>\${i.invoiceNumber || '—'}</td>
+          <td>\${fechaStr}</td>
+          <td>\${i.email || '—'}</td>
+          <td>\${(i.base || 0).toFixed(2)}</td>
+          <td>\${(i.iva || 0).toFixed(2)}</td>
+          <td>-\${(i.ret || 0).toFixed(2)}</td>
+          <td style="color:#22c55e; font-weight:bold;">\${(i.total || 0).toFixed(2)}</td>
+          <td><span style="text-transform:uppercase; font-size:10px;" class="pill">\${i.method || 'manual'}</span></td>
         </tr>\`;
       }).join('');
-      foot.innerHTML = \`<tr><td colspan="3">TOTALES ACUMULADOS</td>
-        <td>\${totals.base.toFixed(2)}€</td><td>\${totals.iva.toFixed(2)}€</td>
-        <td>-\${totals.ret.toFixed(2)}€</td><td>\${totals.total.toFixed(2)}€</td><td></td></tr>\`;
+
+      foot.innerHTML = \`<tr>
+        <td colspan="3">TOTALES DEL PERÍODO</td>
+        <td>\${totals.base.toFixed(2)}€</td>
+        <td>\${totals.iva.toFixed(2)}€</td>
+        <td>-\${totals.ret.toFixed(2)}€</td>
+        <td style="color:#22c55e;">\${totals.total.toFixed(2)}€</td>
+        <td></td>
+      </tr>\`;
       window.lastInvoices = j.items;
+    } catch(e){ rows.innerHTML = '<tr><td colspan="8" style="color:red;">Error: '+e.message+'</td></tr>'; }
+  }
+
+  async function complete(id){
+    if(!confirm('¿Confirmar pago y emitir factura?')) return;
+    try {
+      await api('/api/admin/manual-orders/' + id + '/complete', {method:'POST'});
+      loadOrders();
     } catch(e){ alert(e.message); }
   }
-  async function complete(id){
-    if(confirm('¿Confirmar pago y emitir factura?')){
-      try{ await api('/api/admin/manual-orders/'+id+'/complete', {method:'POST'}); loadOrders(); } catch(e){ alert(e.message); }
-    }
-  }
+
   function exportCSV(){
-    if(!window.lastInvoices) return;
+    if(!window.lastInvoices || window.lastInvoices.length === 0) { alert('No hay datos para exportar'); return; }
     let csv = "Factura;Fecha;Email;Base;IVA;Retencion;Total;Metodo\\n";
     window.lastInvoices.forEach(i => {
-      csv += \`\${i.invoiceNumber};\${new Date(i.date._seconds*1000).toLocaleDateString()};\${i.email};\${i.base};\${i.iva};\${i.ret};\${i.total};\${i.method}\\n\`;
+      const f = i.date && i.date._seconds ? new Date(i.date._seconds*1000).toLocaleDateString() : '';
+      csv += \`\${i.invoiceNumber || ''};\${f};\${i.email || ''};\${i.base || 0};\${i.iva || 0};\${i.ret || 0};\${i.total || 0};\${i.method || 'manual'}\\n\`;
     });
     const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
     const link = document.createElement("a");
@@ -413,9 +458,12 @@ function adminHtmlPage() {
     link.download = "libro_facturas_tuappgo.csv";
     link.click();
   }
+
+  // Carga inicial
   loadOrders();
 </script>
-</body></html>`;
+</body>
+</html>`;
 }
 
 function adminPageHandler(req, res) {
