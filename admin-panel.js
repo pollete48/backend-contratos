@@ -22,9 +22,6 @@ function buildTransporter() {
   });
 }
 
-/**
- * Lógica de Contador de Factura con reseteo anual (Compartida)
- */
 async function getNextInvoiceNumber(db) {
   const yearNow = new Date().getFullYear();
   const counterRef = db.collection('metadata').doc('invoice_counter');
@@ -47,11 +44,6 @@ async function getNextInvoiceNumber(db) {
   });
 }
 
-/**
- * Genera el Bloque HTML de la factura desglosada
- * Mejora 1: Logo 105px
- * Mejora 2: Disposición vertical descendente
- */
 function buildInvoiceHtml(invoiceData) {
   const emisor = {
     nombre: process.env.EMPRESA_NOMBRE || '',
@@ -77,12 +69,10 @@ function buildInvoiceHtml(invoiceData) {
           </td>
         </tr>
       </table>
-      
       <div style="margin-top:20px;">
         <h3 style="margin-bottom:5px; color:#1a1a1a;">FACTURA: ${invoiceData.numero}</h3>
         <p style="font-size:13px; margin-top:0;">Fecha: ${invoiceData.fecha}</p>
       </div>
-
       <table style="width:100%; border-collapse:collapse; margin-top:15px; font-size:15px;">
         <tr>
           <td style="padding:10px 0; border-bottom:1px solid #eee;">Base Imponible</td>
@@ -107,7 +97,6 @@ function buildInvoiceHtml(invoiceData) {
 
 function buildPurchaseEmail({ code, expiresAt, invoiceData }) {
   const facturaHtml = buildInvoiceHtml(invoiceData);
-  
   return {
     subject: 'Tu licencia y factura de TuAppGo',
     html: `
@@ -120,10 +109,8 @@ function buildPurchaseEmail({ code, expiresAt, invoiceData }) {
         1) Abre la app<br>
         2) Ajustes → Licencia<br>
         3) Pega el código y activa</p>
-        
         <p>Adjuntamos a este email su factura detallada en formato PDF.</p>
         ${facturaHtml}
-        
         <p style="margin-top:20px;"><strong>Importante:</strong><br>
         - La licencia es para 1 dispositivo.<br>
         - Incluye 1 cambio de dispositivo al año.</p>
@@ -167,19 +154,11 @@ async function listManualOrders(req, res) {
   try {
     const db = req.app?.locals?.db;
     if (!db) return res.status(503).json({ ok: false, code: 'FIRESTORE_NOT_READY' });
-
     const status = String(req.query?.status || 'pending');
     const q = db.collection('manual_orders').where('status', '==', status).limit(200);
-
     const snap = await q.get();
     let items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-    items.sort((a, b) => {
-      const aSec = a?.createdAt?._seconds ?? 0;
-      const bSec = b?.createdAt?._seconds ?? 0;
-      return bSec - aSec;
-    });
-
+    items.sort((a, b) => (b?.createdAt?._seconds ?? 0) - (a?.createdAt?._seconds ?? 0));
     return res.json({ ok: true, items, priceEur: getPriceEur() });
   } catch (err) {
     console.error('❌ listManualOrders', err);
@@ -187,22 +166,29 @@ async function listManualOrders(req, res) {
   }
 }
 
+async function listInvoices(req, res) {
+  try {
+    const db = req.app?.locals?.db;
+    const snap = await db.collection('invoices').orderBy('date', 'desc').limit(500).get();
+    const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    return res.json({ ok: true, items });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
 async function completeManualOrder(req, res) {
   try {
     const db = req.app?.locals?.db;
     if (!db) return res.status(503).json({ ok: false, code: 'FIRESTORE_NOT_READY' });
-
     const id = String(req.params?.id || '').trim();
     if (!id) return res.status(400).json({ ok: false, code: 'MISSING_ID' });
-
     const orderRef = db.collection('manual_orders').doc(id);
-
     const order = await db.runTransaction(async (tx) => {
       const snap = await tx.get(orderRef);
       if (!snap.exists) throw new Error('ORDER_NOT_FOUND');
       const o = snap.data() || {};
       if (o.status !== 'pending') throw new Error('ORDER_NOT_PENDING');
-
       tx.update(orderRef, {
         status: 'paid_processing',
         paidAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -214,94 +200,65 @@ async function completeManualOrder(req, res) {
     });
 
     const email = String(order.email || '').trim().toLowerCase();
-    
-    // Generar licencia
     const paidAtDate = new Date();
     const expiresAtDate = new Date(paidAtDate);
     expiresAtDate.setFullYear(expiresAtDate.getFullYear() + 1);
     const code = await generateUniqueLicenseCode(db, { collectionName: 'licenses' });
-
     const licRef = db.collection('licenses').doc(code);
     
     await db.runTransaction(async (tx) => {
-      const snap = await tx.get(licRef);
-      if (snap.exists) throw new Error('LICENSE_COLLISION');
       tx.create(licRef, {
         code, email, status: 'active',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         paidAt: admin.firestore.Timestamp.fromDate(paidAtDate),
         expiresAt: admin.firestore.Timestamp.fromDate(expiresAtDate),
-        activatedUuid: null, activatedAt: null,
-        deviceChangeUsed: false, deviceChangedAt: null,
-        recoveryUsed: false, recoveryUsedAt: null,
         source: 'manual',
         manual: { orderId: id, metodo: order.metodo || null, referencia: order.referencia || null },
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     });
 
-    // --- LÓGICA DE FACTURA ---
     const numFactura = await getNextInvoiceNumber(db);
     const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
     const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
-    
     const totalVal = getPriceEur();
     const baseVal = getBaseImponible();
-    const total = totalVal.toFixed(2);
-    const base = baseVal.toFixed(2);
-    const iva = (baseVal * (ivaPerc / 100)).toFixed(2);
-    const ret = (baseVal * (retPerc / 100)).toFixed(2);
+    const ivaVal = parseFloat((baseVal * (ivaPerc / 100)).toFixed(2));
+    const retVal = parseFloat((baseVal * (retPerc / 100)).toFixed(2));
 
     const invoiceData = {
       numero: numFactura,
       fecha: new Date().toLocaleDateString('es-ES'),
-      base: base.replace('.', ','),
-      iva: iva.replace('.', ','),
-      ret: ret.replace('.', ','),
-      total: total.replace('.', ','),
+      base: baseVal.toFixed(2).replace('.', ','),
+      iva: ivaVal.toFixed(2).replace('.', ','),
+      ret: retVal.toFixed(2).replace('.', ','),
+      total: totalVal.toFixed(2).replace('.', ','),
       ivaPerc, retPerc
     };
 
-    // REGISTRO EN EL LIBRO DE FACTURAS EMITIDAS
     await db.collection('invoices').doc(numFactura.replace('/', '-')).set({
       invoiceNumber: numFactura,
       date: admin.firestore.FieldValue.serverTimestamp(),
-      email: email,
-      base: parseFloat(base),
-      iva: parseFloat(iva),
-      ret: parseFloat(ret),
-      total: parseFloat(total),
+      email,
+      base: baseVal,
+      iva: ivaVal,
+      ret: retVal,
+      total: totalVal,
       method: order.metodo || 'manual',
       orderId: id
     });
 
     const mail = buildPurchaseEmail({ code, expiresAt: expiresAtDate, invoiceData });
-    const finalHtml = `${mail.html}${emailSignatureHtml()}`;
-
-    // Mejora 3: Generar PDF
     const pdfBuffer = await htmlPdf.generatePdf({ content: mail.facturaSoloHtml }, { format: 'A4' });
-
     const transporter = buildTransporter();
-    try {
-      await transporter.sendMail({
-        from: requireEnv('SMTP_FROM'),
-        to: email,
-        subject: mail.subject,
-        html: finalHtml,
-        attachments: [{
-          filename: `Factura_${numFactura.replace('/', '-')}.pdf`,
-          content: pdfBuffer
-        }]
-      });
-    } catch (mailErr) {
-      await orderRef.update({
-        status: 'license_created_email_failed',
-        licenseCode: code,
-        emailError: String(mailErr.message || mailErr),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      return res.json({ ok: true, licenseCode: code, warning: 'EMAIL_FAILED' });
-    }
+    
+    await transporter.sendMail({
+      from: requireEnv('SMTP_FROM'),
+      to: email,
+      subject: mail.subject,
+      html: `${mail.html}${emailSignatureHtml()}`,
+      attachments: [{ filename: `Factura_${numFactura.replace('/', '-')}.pdf`, content: pdfBuffer }]
+    });
 
     await orderRef.update({
       status: 'license_sent',
@@ -327,97 +284,138 @@ function adminHtmlPage() {
   <title>TuAppGo Admin</title>
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; margin:0; background:#0b1220; color:#e8eefc;}
-    header{padding:18px 20px; background:#0f1b33; border-bottom:1px solid rgba(255,255,255,.08);}
-    h1{margin:0; font-size:18px;}
-    main{max-width:1000px; margin:0 auto; padding:18px;}
+    header{padding:18px 20px; background:#0f1b33; border-bottom:1px solid rgba(255,255,255,.08); display:flex; justify-content:space-between; align-items:center;}
+    .nav-tabs{display:flex; gap:10px; margin-bottom:20px;}
+    .tab{padding:10px 20px; cursor:pointer; border-radius:10px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1);}
+    .tab.active{background:#2a6edb; border-color:#2a6edb;}
+    main{max-width:1100px; margin:0 auto; padding:18px;}
     .card{background:#0f1b33; border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:14px; margin-bottom:12px;}
     .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
     input,select{background:#0b1220; color:#e8eefc; border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:10px 12px;}
     button{border:0; border-radius:12px; padding:10px 12px; cursor:pointer; font-weight:700;}
     .btn{background:#2a6edb; color:white;}
     .btn2{background:#22c55e; color:#07121e;}
-    .btn3{background:#334155; color:#e8eefc;}
+    .btn-csv{background:#f59e0b; color:#07121e;}
     table{width:100%; border-collapse:collapse; margin-top:10px;}
-    th,td{padding:10px; border-bottom:1px solid rgba(255,255,255,.08); font-size:13px; vertical-align:top;}
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;}
-    .pill{display:inline-block; padding:4px 8px; border-radius:999px; background:rgba(255,255,255,.10); font-size:12px;}
+    th,td{padding:10px; border-bottom:1px solid rgba(255,255,255,.08); font-size:13px; text-align:left;}
+    th{background:rgba(255,255,255,.03);}
+    .text-right{text-align:right;}
+    tfoot{font-weight:bold; background:rgba(255,255,255,.05);}
+    .hidden{display:none;}
   </style>
 </head>
 <body>
-<header><h1>TuAppGo Admin — Pagos manuales</h1></header>
+<header>
+  <h1>TuAppGo Admin</h1>
+  <div id="admin-key-area"><input id="key" type="password" placeholder="ADMIN_KEY" onchange="saveKey()"></div>
+</header>
 <main>
-  <div class="card">
-    <div class="row">
-      <input id="key" type="password" placeholder="ADMIN_KEY" style="flex:1; min-width:240px;">
-      <select id="status">
+  <div class="nav-tabs">
+    <div id="tab-orders" class="tab active" onclick="showTab('orders')">Gestión Pedidos</div>
+    <div id="tab-invoices" class="tab" onclick="showTab('invoices')">Libro de Facturas</div>
+  </div>
+
+  <div id="view-orders">
+    <div class="card row">
+      <select id="status" onchange="loadOrders()">
         <option value="pending">Pendientes</option>
         <option value="license_sent">Enviadas</option>
-        <option value="paid_processing">Procesando</option>
-        <option value="error">Error</option>
       </select>
-      <button class="btn" onclick="saveKey()">Guardar clave</button>
-      <button class="btn3" onclick="load()">Cargar</button>
+      <button class="btn" onclick="loadOrders()">Refrescar</button>
+    </div>
+    <div class="card">
+      <table id="table-orders">
+        <thead><tr><th>Fecha</th><th>Método</th><th>Email</th><th>Referencia</th><th>Acción</th></tr></thead>
+        <tbody id="rows-orders"></tbody>
+      </table>
     </div>
   </div>
-  <div class="card">
-    <div id="msg" class="muted">Lista de pedidos</div>
-    <div style="overflow:auto;">
-      <table>
+
+  <div id="view-invoices" class="hidden">
+    <div class="card row">
+      <button class="btn" onclick="loadInvoices()">Actualizar Libro</button>
+      <button class="btn-csv" onclick="exportCSV()">Exportar CSV (Hacienda)</button>
+    </div>
+    <div class="card">
+      <table id="table-invoices">
         <thead>
-          <tr>
-            <th>Fecha</th>
-            <th>Método</th>
-            <th>Email</th>
-            <th>Referencia</th>
-            <th>Estado</th>
-            <th>Acción</th>
-          </tr>
+          <tr><th>Factura</th><th>Fecha</th><th>Email</th><th>Base (€)</th><th>IVA (€)</th><th>Ret (€)</th><th>Total (€)</th><th>Método</th></tr>
         </thead>
-        <tbody id="rows"></tbody>
+        <tbody id="rows-invoices"></tbody>
+        <tfoot id="foot-invoices"></tfoot>
       </table>
     </div>
   </div>
 </main>
 <script>
   const KEY_LS = 'tuappgo_admin_key';
-  const keyInput = document.getElementById('key');
-  const statusSel = document.getElementById('status');
-  const rowsEl = document.getElementById('rows');
-  const msgEl = document.getElementById('msg');
-  keyInput.value = localStorage.getItem(KEY_LS) || '';
-  function saveKey(){ localStorage.setItem(KEY_LS, keyInput.value.trim()); msgEl.textContent = 'Clave guardada.'; }
-  async function api(path, opts={}){
-    const key = (localStorage.getItem(KEY_LS) || '').trim();
-    const headers = Object.assign({'x-admin-key': key}, opts.headers || {});
-    const r = await fetch(path, Object.assign({}, opts, {headers}));
+  document.getElementById('key').value = localStorage.getItem(KEY_LS) || '';
+  function saveKey(){ localStorage.setItem(KEY_LS, document.getElementById('key').value.trim()); }
+  function showTab(t){
+    document.getElementById('view-orders').classList.toggle('hidden', t!=='orders');
+    document.getElementById('view-invoices').classList.toggle('hidden', t!=='invoices');
+    document.getElementById('tab-orders').classList.toggle('active', t==='orders');
+    document.getElementById('tab-invoices').classList.toggle('active', t==='invoices');
+    if(t==='invoices') loadInvoices();
+  }
+  async function api(p, o={}){
+    const h = {'x-admin-key': localStorage.getItem(KEY_LS)};
+    const r = await fetch(p, Object.assign({headers:h}, o));
     const j = await r.json();
-    if(!r.ok) throw new Error(j.code || 'ERROR');
+    if(!r.ok) throw new Error(j.code || j.error || 'Error');
     return j;
   }
-  async function load(){
-    rowsEl.innerHTML = 'Cargando...';
-    try{
-      const j = await api('/api/admin/manual-orders?status=' + statusSel.value);
-      rowsEl.innerHTML = (j.items || []).map(o => \`
-        <tr>
-          <td>\${new Date(o.createdAt._seconds*1000).toLocaleString()}</td>
-          <td>\${o.metodo}</td>
-          <td>\${o.email}</td>
-          <td>\${o.referencia}</td>
-          <td>\${o.status}</td>
-          <td>\${o.status==='pending' ? '<button class="btn2" onclick="complete(\\''+o.id+'\\')">Confirmar pago y enviar factura</button>':''}</td>
-        </tr>\`).join('');
-    }catch(e){ msgEl.textContent = e.message; }
+  async function loadOrders(){
+    const rows = document.getElementById('rows-orders'); rows.innerHTML = 'Cargando...';
+    try {
+      const j = await api('/api/admin/manual-orders?status='+document.getElementById('status').value);
+      rows.innerHTML = j.items.map(o => \`<tr>
+        <td>\${new Date(o.createdAt._seconds*1000).toLocaleString()}</td>
+        <td>\${o.metodo}</td><td>\${o.email}</td><td>\${o.referencia}</td>
+        <td>\${o.status==='pending' ? '<button class="btn2" onclick="complete(\\''+o.id+'\\')">Confirmar</button>':''}</td>
+      </tr>\`).join('');
+    } catch(e){ alert(e.message); }
+  }
+  async function loadInvoices(){
+    const rows = document.getElementById('rows-invoices');
+    const foot = document.getElementById('foot-invoices');
+    try {
+      const j = await api('/api/admin/invoices');
+      let totals = {base:0, iva:0, ret:0, total:0};
+      rows.innerHTML = j.items.map(i => {
+        totals.base += i.base; totals.iva += i.iva; totals.ret += i.ret; totals.total += i.total;
+        return \`<tr>
+          <td>\${i.invoiceNumber}</td><td>\${new Date(i.date._seconds*1000).toLocaleDateString()}</td>
+          <td>\${i.email}</td><td>\${i.base.toFixed(2)}</td><td>\${i.iva.toFixed(2)}</td>
+          <td>-\${i.ret.toFixed(2)}</td><td>\${i.total.toFixed(2)}</td><td>\${i.method}</td>
+        </tr>\`;
+      }).join('');
+      foot.innerHTML = \`<tr><td colspan="3">TOTALES ACUMULADOS</td>
+        <td>\${totals.base.toFixed(2)}€</td><td>\${totals.iva.toFixed(2)}€</td>
+        <td>-\${totals.ret.toFixed(2)}€</td><td>\${totals.total.toFixed(2)}€</td><td></td></tr>\`;
+      window.lastInvoices = j.items;
+    } catch(e){ alert(e.message); }
   }
   async function complete(id){
-    if(!confirm('¿Enviar factura y licencia?')) return;
-    try{ await api('/api/admin/manual-orders/'+id+'/complete', {method:'POST'}); load(); }
-    catch(e){ alert(e.message); }
+    if(confirm('¿Confirmar pago y emitir factura?')){
+      try{ await api('/api/admin/manual-orders/'+id+'/complete', {method:'POST'}); loadOrders(); } catch(e){ alert(e.message); }
+    }
   }
-  load();
+  function exportCSV(){
+    if(!window.lastInvoices) return;
+    let csv = "Factura;Fecha;Email;Base;IVA;Retencion;Total;Metodo\\n";
+    window.lastInvoices.forEach(i => {
+      csv += \`\${i.invoiceNumber};\${new Date(i.date._seconds*1000).toLocaleDateString()};\${i.email};\${i.base};\${i.iva};\${i.ret};\${i.total};\${i.method}\\n\`;
+    });
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "libro_facturas_tuappgo.csv";
+    link.click();
+  }
+  loadOrders();
 </script>
-</body>
-</html>`;
+</body></html>`;
 }
 
 function adminPageHandler(req, res) {
@@ -425,4 +423,4 @@ function adminPageHandler(req, res) {
   res.send(adminHtmlPage());
 }
 
-module.exports = { requireAdmin, listManualOrders, completeManualOrder, adminPageHandler };
+module.exports = { requireAdmin, listManualOrders, completeManualOrder, listInvoices, adminPageHandler };
