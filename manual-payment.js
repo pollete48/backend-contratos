@@ -127,8 +127,9 @@ function buildInvoiceTemplate(invoiceData, code, supportEmail) {
 
 /**
  * 1. Crea la orden pendiente (Desde el cliente)
+ * NOMBRE ORIGINAL: createManualOrderHandler
  */
-async function createManualOrder(req, res) {
+async function createManualOrderHandler(req, res) {
   try {
     const db = req.app?.locals?.db;
     if (!db) return res.status(500).json({ ok: false, error: 'Database not initialized' });
@@ -162,13 +163,14 @@ async function createManualOrder(req, res) {
       amount
     });
   } catch (err) {
-    console.error('[createManualOrder] Error:', err);
+    console.error('[createManualOrderHandler] Error:', err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 }
 
 /**
  * 2. Completa la orden, genera licencia y envía factura (Desde Admin Panel)
+ * NOMBRE ORIGINAL: completeManualOrder
  */
 async function completeManualOrder(req, res) {
   try {
@@ -188,7 +190,6 @@ async function completeManualOrder(req, res) {
       return res.status(400).json({ ok: false, error: 'Esta orden ya ha sido procesada' });
     }
 
-    // A. Generar Licencia
     const code = await generateUniqueLicenseCode(db, { collectionName: 'licenses' });
     const expiresAt = new Date();
     expiresAt.setFullYear(expiresAt.getFullYear() + 1);
@@ -203,7 +204,6 @@ async function completeManualOrder(req, res) {
       orderId: orderId
     });
 
-    // B. Generar Factura
     const numFactura = await getNextInvoiceNumber(db);
     const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
     const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
@@ -221,13 +221,10 @@ async function completeManualOrder(req, res) {
     };
 
     const supportEmail = process.env.SUPPORT_EMAIL || 'contacto@tuappgo.com';
-    // AQUÍ CORREGIDO: Llamada al nombre correcto de la función
     const templates = buildInvoiceTemplate(invoiceData, code, supportEmail);
 
-    // C. Generar PDF
     const pdfBuffer = await htmlPdf.generatePdf({ content: templates.facturaSoloHtml }, { format: 'A4' });
 
-    // D. Enviar Email
     const transporter = buildTransporter();
     const emailSignatureHtml = `
       <hr style="margin-top:30px; border:none; border-top:1px solid #e0e0e0;" />
@@ -249,7 +246,6 @@ async function completeManualOrder(req, res) {
       }]
     });
 
-    // E. Actualizar Orden
     await orderRef.update({
       status: 'license_sent',
       licenseCode: code,
@@ -266,9 +262,9 @@ async function completeManualOrder(req, res) {
 }
 
 /**
- * Exportaciones alineadas con el archivo de rutas
+ * Exportaciones respetando los nombres de métodos originales
  */
 module.exports = {
-  createManualOrder,
+  createManualOrderHandler,
   completeManualOrder
 };
