@@ -50,10 +50,10 @@ async function getNextInvoiceNumber(db) {
   });
 }
 
-function buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData }) {
-  const expires = invoiceData.fecha; // Usamos la misma fecha de la factura
-  
-  // Datos del emisor desde ENV
+/**
+ * Construye el cuerpo del email incluyendo la factura desglosada
+ */
+function buildEmailContent({ code, expiresAt, invoiceData }) {
   const emisor = {
     nombre: process.env.EMPRESA_NOMBRE || '',
     dni: process.env.EMPRESA_DNI || '',
@@ -63,7 +63,7 @@ function buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData }) {
   };
 
   const facturaHtml = `
-    <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px;">
+    <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px; color:#333;">
       <table style="width:100%;">
         <tr>
           <td style="vertical-align:top;">
@@ -107,19 +107,26 @@ function buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData }) {
     </div>
   `;
 
+  const footerHtml = `
+    <div style="margin-top:20px; font-family:Arial, sans-serif; font-size:13px; color:#555;">
+      <hr style="border:none; border-top:1px solid #eee; margin-bottom:15px;" />
+      <strong>TuAppGo</strong><br />
+      Automatización de contratos y documentos<br />
+      <a href="https://tuappgo.com" style="color:#2a6edb; text-decoration:none;">https://tuappgo.com</a>
+    </div>
+  `;
+
   return {
     subject: 'Tu licencia y factura de TuAppGo',
-    text: `Tuappgo te agradece tu confianza.\n\nCódigo de licencia: ${code}\nVálida hasta: ${expires}\n\nFactura: ${invoiceData.numero}\nTotal: ${invoiceData.total}€`,
     html: `
       <p>Tuappgo te agradece tu confianza por tu compra.</p>
       <p><strong>Tu código de licencia:</strong><br>
       <span style="font-size:18px;letter-spacing:1px; color:#2a6edb;">${code}</span></p>
-      <p><strong>Válida hasta:</strong> ${expires}</p>
+      <p><strong>Válida hasta:</strong> ${invoiceData.fecha}</p>
       <p><strong>Cómo activar:</strong> Abre la app, ve a Ajustes → Licencia, pega el código y activa.</p>
-      <hr style="margin:20px 0; border:none; border-top:1px solid #eee;">
       ${facturaHtml}
-      <p style="margin-top:20px; font-size:12px; color:#777;">Soporte: ${supportEmail}</p>
-    `,
+      ${footerHtml}
+    `
   };
 }
 
@@ -136,35 +143,27 @@ async function stripeWebhookHandler(req, res) {
   const db = req.app?.locals?.db;
   if (!db) return res.status(500).send('Firestore db no configurado');
 
-  const eventRef = db.collection('stripe_events').doc(event.id);
-
-  // Manejo de eventos
   if (event.type !== 'checkout.session.completed') return res.json({ received: true });
 
   const session = event.data.object;
   if (session.payment_status !== 'paid') return res.json({ received: true });
 
-  const customerEmail = session.customer_details?.email || session.customer_email;
-  const stripeSessionId = session.id;
-
   try {
-    // 1. Generar licencia
-    const paidAt = new Date();
+    const customerEmail = session.customer_details?.email || session.customer_email;
     const { code, expiresAt } = await createLicenseFromStripe(db, {
       email: customerEmail,
-      stripeSessionId,
-      paidAt,
+      stripeSessionId: session.id,
+      paidAt: new Date(),
       amountTotal: session.amount_total,
       currency: session.currency,
       collectionName: 'licenses',
     });
 
-    // 2. Obtener número de factura y datos dinámicos
     const numFactura = await getNextInvoiceNumber(db);
     const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
     const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
     
-    // Cálculos basados en el total de 148.20
+    // Cálculo: Basado en el total de 148,20
     const total = (session.amount_total / 100).toFixed(2);
     const base = "130.00";
     const iva = (130 * (ivaPerc / 100)).toFixed(2);
@@ -181,22 +180,17 @@ async function stripeWebhookHandler(req, res) {
       retPerc
     };
 
-    // 3. Enviar email
     const transporter = buildTransporter();
-    const supportEmail = process.env.SUPPORT_EMAIL || 'contacto@tuappgo.com';
-    const mail = buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData });
+    const mail = buildEmailContent({ code, expiresAt, invoiceData });
 
     await transporter.sendMail({
       from: requireEnv('SMTP_FROM'),
       to: customerEmail.trim(),
       subject: mail.subject,
-      text: mail.text,
       html: mail.html,
     });
 
-    await eventRef.set({ status: 'processed', invoice: numFactura, licenseCode: code }, { merge: true });
     return res.json({ received: true });
-
   } catch (err) {
     console.error('Webhook Error:', err);
     return res.status(500).send(err.message);
