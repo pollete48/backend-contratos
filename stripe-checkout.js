@@ -86,6 +86,7 @@ async function createCheckoutSessionHandler(req, res) {
       }],
       
       // Aplicamos la retención mediante el Cupón manual de Stripe
+      // Nota: No se puede usar 'allow_promotion_codes: true' junto con 'discounts'
       discounts: [{
         coupon: 'retencion_irpf', 
       }],
@@ -99,9 +100,6 @@ async function createCheckoutSessionHandler(req, res) {
 
       success_url: successUrlFinal,
       cancel_url: cancelUrlFinal,
-
-      // Desactivamos códigos promocionales para evitar conflictos con la retención
-      allow_promotion_codes: false,
 
       metadata: {
         product: 'tuappgo-licencia-anual',
