@@ -8,9 +8,6 @@
 // - RETENCION_PORCENTAJE (ej: -7)
 // - CHECKOUT_SUCCESS_URL
 // - CHECKOUT_CANCEL_URL
-//
-// Ruta sugerida:
-//    app.post('/api/stripe/checkout', createCheckoutSessionHandler);
 
 const Stripe = require('stripe');
 
@@ -42,40 +39,11 @@ function buildSuccessUrlWithSessionId(successBase) {
   return afterHash !== undefined ? `${withQuery}#${afterHash}` : withQuery;
 }
 
-/**
- * Obtiene o crea el Tax Rate basado en la variable de entorno
- */
-async function getOrCreateRetencionTaxRate(valorPorcentaje) {
-  try {
-    const numPorcentaje = parseFloat(valorPorcentaje);
-    if (isNaN(numPorcentaje)) return null;
-
-    const taxRates = await stripe.taxRates.list({ active: true, limit: 100 });
-    // Buscamos si existe un impuesto con ese porcentaje exacto y nombre de retención
-    const existing = taxRates.data.find(tr => tr.percentage === numPorcentaje && tr.display_name.includes('Retención'));
-    
-    if (existing) return existing.id;
-
-    // Si no existe, lo creamos dinámicamente
-    const newTaxRate = await stripe.taxRates.create({
-      display_name: 'Retención IRPF',
-      description: `Retención ${Math.abs(numPorcentaje)}% (aplicada automáticamente)`,
-      percentage: numPorcentaje,
-      inclusive: false,
-      jurisdiction: 'ES',
-    });
-    return newTaxRate.id;
-  } catch (error) {
-    console.error('[getOrCreateRetencionTaxRate] Error:', error.message);
-    return null;
-  }
-}
-
 async function createCheckoutSessionHandler(req, res) {
   try {
     const PRICE_ID = requireEnv('STRIPE_PRICE_ID');
     const IVA_ID = requireEnv('STRIPE_IVA_ID');
-    const PORCENTAJE_RET = process.env.RETENCION_PORCENTAJE; // No usamos requireEnv para que sea opcional
+    const PORCENTAJE_RET = parseFloat(process.env.RETENCION_PORCENTAJE || '0');
     
     const successEnv = requireEnv('CHECKOUT_SUCCESS_URL');
     const cancelEnv = requireEnv('CHECKOUT_CANCEL_URL');
@@ -83,28 +51,42 @@ async function createCheckoutSessionHandler(req, res) {
     const successUrlFinal = buildSuccessUrlWithSessionId(successEnv);
     const cancelUrlFinal = sanitizeBaseUrl(cancelEnv);
 
-    // Lista de impuestos a aplicar
-    const activeTaxRates = [IVA_ID];
+    // 1. Obtenemos el precio base para calcular la retención exacta
+    const price = await stripe.prices.retrieve(PRICE_ID);
+    const unitAmount = price.unit_amount; // Ej: 13000 (en céntimos)
 
-    // Si existe la variable de retención, buscamos o creamos el ID
-    if (PORCENTAJE_RET) {
-      const RETENCION_ID = await getOrCreateRetencionTaxRate(PORCENTAJE_RET);
-      if (RETENCION_ID) {
-        activeTaxRates.push(RETENCION_ID);
+    // 2. Definimos los line_items. Empezamos con el producto principal e IVA
+    const lineItems = [
+      {
+        price: PRICE_ID,
+        quantity: 1,
+        tax_rates: [IVA_ID],
       }
-    }
+    ];
 
-    console.log('[checkout] Impuestos finales a aplicar:', activeTaxRates);
+    // 3. Si hay retención, la añadimos como una línea de descuento manual
+    // Esto evita los problemas de los Tax Rates negativos en el Dashboard
+    if (PORCENTAJE_RET !== 0) {
+      const discountAmount = Math.round(unitAmount * (Math.abs(PORCENTAJE_RET) / 100));
+      
+      lineItems.push({
+        price_data: {
+          currency: 'eur',
+          product_data: {
+            name: `Retención IRPF (${Math.abs(PORCENTAJE_RET)}%)`,
+            description: 'Deducción profesional aplicada sobre la base imponible',
+          },
+          unit_amount: -discountAmount, // Valor negativo para restar
+        },
+        quantity: 1,
+      });
+    }
 
     const email = String(req.body?.email || '').trim().toLowerCase();
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
-      line_items: [{ 
-        price: PRICE_ID, 
-        quantity: 1,
-        tax_rates: activeTaxRates
-      }],
+      line_items: lineItems,
       customer_email: email || undefined,
       invoice_creation: {
         enabled: true,
@@ -114,6 +96,7 @@ async function createCheckoutSessionHandler(req, res) {
       allow_promotion_codes: true,
       metadata: {
         product: 'tuappgo-licencia-anual',
+        retencion_aplicada: `${PORCENTAJE_RET}%`
       },
     });
 
