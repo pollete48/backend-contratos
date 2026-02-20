@@ -5,9 +5,11 @@
 // - STRIPE_SECRET_KEY
 // - STRIPE_PRICE_ID
 // - STRIPE_IVA_ID
-// - RETENCION_PORCENTAJE (ej: -7)
 // - CHECKOUT_SUCCESS_URL
 // - CHECKOUT_CANCEL_URL
+//
+// Ruta sugerida:
+//    app.post('/api/stripe/checkout', createCheckoutSessionHandler);
 
 const Stripe = require('stripe');
 
@@ -25,17 +27,37 @@ function fail(res, status, code, message) {
   return res.status(status).json({ ok: false, code, message });
 }
 
+/**
+ * Limpia URL de entorno:
+ * - trim
+ * - elimina espacios
+ * - elimina query ?session_id=... si ya lo hubieran puesto en env
+ * - elimina "#" final suelto
+ */
 function sanitizeBaseUrl(raw) {
   const s = String(raw || '').trim();
+
+  // Si alguien metió ?session_id=... en la env, lo quitamos para no duplicarlo
   const noQuery = s.split('?')[0];
+
+  // Quita un # final suelto (por si alguien puso .../#)
   const cleaned = noQuery.endsWith('#') ? noQuery.slice(0, -1) : noQuery;
+
   return cleaned;
 }
 
+/**
+ * Construye success_url final añadiendo session_id.
+ */
 function buildSuccessUrlWithSessionId(successBase) {
   const base = sanitizeBaseUrl(successBase);
+
+  // Si hay hash, la query debe ir antes del hash
   const [beforeHash, afterHash] = base.split('#');
+
   const withQuery = `${beforeHash}?session_id={CHECKOUT_SESSION_ID}`;
+
+  // Si había hash, lo reponemos
   return afterHash !== undefined ? `${withQuery}#${afterHash}` : withQuery;
 }
 
@@ -43,60 +65,46 @@ async function createCheckoutSessionHandler(req, res) {
   try {
     const PRICE_ID = requireEnv('STRIPE_PRICE_ID');
     const IVA_ID = requireEnv('STRIPE_IVA_ID');
-    const PORCENTAJE_RET = parseFloat(process.env.RETENCION_PORCENTAJE || '0');
-    
     const successEnv = requireEnv('CHECKOUT_SUCCESS_URL');
     const cancelEnv = requireEnv('CHECKOUT_CANCEL_URL');
 
     const successUrlFinal = buildSuccessUrlWithSessionId(successEnv);
     const cancelUrlFinal = sanitizeBaseUrl(cancelEnv);
 
-    // 1. Obtenemos el precio base para calcular la retención exacta
-    const price = await stripe.prices.retrieve(PRICE_ID);
-    const unitAmount = price.unit_amount; // Ej: 13000 (en céntimos)
+    // LOGS (para verificar en Render)
+    console.log('[checkout] Iniciando sesión con IVA:', IVA_ID);
 
-    // 2. Definimos los line_items. Empezamos con el producto principal e IVA
-    const lineItems = [
-      {
-        price: PRICE_ID,
-        quantity: 1,
-        tax_rates: [IVA_ID],
-      }
-    ];
-
-    // 3. Si hay retención, la añadimos como una línea de descuento manual
-    // Esto evita los problemas de los Tax Rates negativos en el Dashboard
-    if (PORCENTAJE_RET !== 0) {
-      const discountAmount = Math.round(unitAmount * (Math.abs(PORCENTAJE_RET) / 100));
-      
-      lineItems.push({
-        price_data: {
-          currency: 'eur',
-          product_data: {
-            name: `Retención IRPF (${Math.abs(PORCENTAJE_RET)}%)`,
-            description: 'Deducción profesional aplicada sobre la base imponible',
-          },
-          unit_amount: -discountAmount, // Valor negativo para restar
-        },
-        quantity: 1,
-      });
-    }
-
+    // Email opcional
     const email = String(req.body?.email || '').trim().toLowerCase();
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
-      line_items: lineItems,
+      line_items: [{ 
+        price: PRICE_ID, 
+        quantity: 1,
+        tax_rates: [IVA_ID] 
+      }],
+      
+      // Aplicamos la retención mediante el Cupón manual de Stripe
+      discounts: [{
+        coupon: 'retencion_irpf', 
+      }],
+
       customer_email: email || undefined,
+
+      // Activamos factura para desglose de IVA y Retención
       invoice_creation: {
         enabled: true,
       },
+
       success_url: successUrlFinal,
       cancel_url: cancelUrlFinal,
-      allow_promotion_codes: true,
+
+      // Desactivamos códigos promocionales para evitar conflictos con la retención
+      allow_promotion_codes: false,
+
       metadata: {
         product: 'tuappgo-licencia-anual',
-        retencion_aplicada: `${PORCENTAJE_RET}%`
       },
     });
 
