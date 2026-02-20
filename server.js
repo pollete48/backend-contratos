@@ -66,6 +66,9 @@ function main() {
   // --- PANEL DE ADMINISTRACIÓN ---
   // Vista HTML del Panel
   app.get('/admin', adminPanel.adminPageHandler);
+  
+  // AÑADE ESTA LÍNEA AQUÍ PARA PROBAR:
+  app.get('/api/prueba', (req, res) => res.json({ mensaje: "HOLA, EL SERVIDOR SI ESTA CARGANDO ESTE CODIGO" }));
 
   // APIs del Panel (Protegidas con requireAdmin)
   app.get('/api/admin/manual-orders', adminPanel.requireAdmin, adminPanel.listManualOrders);
@@ -102,3 +105,4 @@ function main() {
 }
 
 main();
+
