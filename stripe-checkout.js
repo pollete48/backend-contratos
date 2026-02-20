@@ -66,41 +66,51 @@ function buildSuccessUrlWithSessionId(successBase) {
 
 /**
  * Función auxiliar para obtener o crear el Tax Rate de Retención del -7%
- * ya que el Dashboard no permite crearlo manualmente.
  */
 async function getOrCreateRetencionTaxRate() {
-  const taxRates = await stripe.taxRates.list({ active: true });
-  const existing = taxRates.data.find(tr => tr.percentage === -7 && tr.display_name === 'Retención IRPF');
-  
-  if (existing) return existing.id;
+  try {
+    const taxRates = await stripe.taxRates.list({ active: true });
+    // Buscamos si ya existe uno con -7%
+    const existing = taxRates.data.find(tr => tr.percentage === -7 && tr.display_name === 'Retención IRPF');
+    
+    if (existing) return existing.id;
 
-  // Si no existe, lo creamos por API (aquí sí permite valores negativos)
-  const newTaxRate = await stripe.taxRates.create({
-    display_name: 'Retención IRPF',
-    description: 'Retención 7%',
-    direction: 'downbound',
-    percentage: -7,
-    inclusive: false,
-  });
-  return newTaxRate.id;
+    // Si no existe, lo creamos (eliminado parámetro 'direction' que fallaba)
+    const newTaxRate = await stripe.taxRates.create({
+      display_name: 'Retención IRPF',
+      description: 'Retención 7%',
+      percentage: -7,
+      inclusive: false,
+    });
+    return newTaxRate.id;
+  } catch (error) {
+    console.error('[getOrCreateRetencionTaxRate] Error:', error.message);
+    // Si falla, devolvemos null para intentar que la sesión se cree al menos con IVA
+    return null;
+  }
 }
 
 async function createCheckoutSessionHandler(req, res) {
   try {
     const PRICE_ID = requireEnv('STRIPE_PRICE_ID');
-    const IVA_ID = requireEnv('STRIPE_IVA_ID'); // ID: txr_1T2wCnPtZfH7kRQfy4yAdc0L
+    const IVA_ID = requireEnv('STRIPE_IVA_ID');
     const successEnv = requireEnv('CHECKOUT_SUCCESS_URL');
     const cancelEnv = requireEnv('CHECKOUT_CANCEL_URL');
 
     const successUrlFinal = buildSuccessUrlWithSessionId(successEnv);
     const cancelUrlFinal = sanitizeBaseUrl(cancelEnv);
 
-    // Obtenemos el ID de la retención (creándolo si no existe)
+    // Intentamos obtener la retención
     const RETENCION_ID = await getOrCreateRetencionTaxRate();
 
-    // LOGS (para ver qué está pasando en Render)
-    console.log('[checkout] IVA ID usado:', IVA_ID);
-    console.log('[checkout] Retención ID usado:', RETENCION_ID);
+    // Preparamos los tax_rates (solo añadimos los que no sean null)
+    const activeTaxRates = [IVA_ID];
+    if (RETENCION_ID) {
+      activeTaxRates.push(RETENCION_ID);
+    }
+
+    // LOGS para verificar en Render
+    console.log('[checkout] Aplicando Tax Rates:', activeTaxRates);
 
     // Email opcional
     const email = String(req.body?.email || '').trim().toLowerCase();
@@ -110,12 +120,11 @@ async function createCheckoutSessionHandler(req, res) {
       line_items: [{ 
         price: PRICE_ID, 
         quantity: 1,
-        tax_rates: [IVA_ID, RETENCION_ID] // Aplicamos ambos impuestos
+        tax_rates: activeTaxRates
       }],
 
       customer_email: email || undefined,
 
-      // Habilitar la creación de facturas para que el cliente reciba el desglose
       invoice_creation: {
         enabled: true,
       },
