@@ -1,3 +1,4 @@
+// admin-panel.js
 const nodemailer = require('nodemailer');
 const admin = require('firebase-admin');
 const { generateUniqueLicenseCode } = require('./license-issue');
@@ -20,68 +21,123 @@ function buildTransporter() {
   });
 }
 
-function formatDateES(date) {
-  const d = date instanceof Date ? date : new Date(date);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString('es-ES', { year: 'numeric', month: '2-digit', day: '2-digit' });
+/**
+ * Lógica de Contador de Factura con reseteo anual (Compartida)
+ */
+async function getNextInvoiceNumber(db) {
+  const yearNow = new Date().getFullYear();
+  const counterRef = db.collection('metadata').doc('invoice_counter');
+
+  return await db.runTransaction(async (tx) => {
+    const snap = await tx.get(counterRef);
+    let nextNum = 1;
+    let lastYear = yearNow;
+
+    if (snap.exists) {
+      const data = snap.data();
+      lastYear = data.year || yearNow;
+      if (lastYear === yearNow) {
+        nextNum = (data.current || 0) + 1;
+      }
+    }
+
+    tx.set(counterRef, { current: nextNum, year: yearNow });
+    return `${nextNum}/${yearNow}`;
+  });
 }
 
-function buildPurchaseEmail({ code, expiresAt, supportEmail }) {
-  const expires = formatDateES(expiresAt);
+/**
+ * Genera el Bloque HTML de la factura desglosada
+ */
+function buildInvoiceHtml(invoiceData) {
+  const emisor = {
+    nombre: process.env.EMPRESA_NOMBRE || '',
+    dni: process.env.EMPRESA_DNI || '',
+    dir: process.env.EMPRESA_DIRECCION || '',
+    tel: process.env.EMPRESA_TELEFONO || '',
+    email: process.env.EMPRESA_EMAIL || ''
+  };
+
+  return `
+    <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px; color:#333;">
+      <table style="width:100%;">
+        <tr>
+          <td style="vertical-align:top;">
+            <img src="https://tuappgo.com/contratos/assets/logo-tuappgo.png" alt="TuAppGo" style="height:60px;">
+          </td>
+          <td style="text-align:right; font-size:12px; color:#555;">
+            <strong>EMISOR:</strong><br>
+            ${emisor.nombre}<br>
+            ${emisor.dni}<br>
+            ${emisor.dir}<br>
+            ${emisor.tel}
+          </td>
+        </tr>
+      </table>
+      
+      <div style="margin-top:20px;">
+        <h3 style="margin-bottom:5px;">FACTURA: ${invoiceData.numero}</h3>
+        <p style="font-size:13px; margin-top:0;">Fecha: ${invoiceData.fecha}</p>
+      </div>
+
+      <table style="width:100%; border-collapse:collapse; margin-top:15px; font-size:14px;">
+        <thead>
+          <tr style="background:#f4f4f4;">
+            <th style="padding:8px; text-align:left; border-bottom:1px solid #ddd;">Descripción</th>
+            <th style="padding:8px; text-align:right; border-bottom:1px solid #ddd;">Base</th>
+            <th style="padding:8px; text-align:right; border-bottom:1px solid #ddd;">IVA (${invoiceData.ivaPerc}%)</th>
+            <th style="padding:8px; text-align:right; border-bottom:1px solid #ddd;">IRPF (-${invoiceData.retPerc}%)</th>
+            <th style="padding:8px; text-align:right; border-bottom:1px solid #ddd;">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="padding:8px; border-bottom:1px solid #eee;">Licencia Anual TuAppGo</td>
+            <td style="padding:8px; text-align:right; border-bottom:1px solid #eee;">${invoiceData.base}€</td>
+            <td style="padding:8px; text-align:right; border-bottom:1px solid #eee;">${invoiceData.iva}€</td>
+            <td style="padding:8px; text-align:right; border-bottom:1px solid #eee; color:#d9534f;">-${invoiceData.ret}€</td>
+            <td style="padding:8px; text-align:right; border-bottom:1px solid #eee; font-weight:bold;">${invoiceData.total}€</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function buildPurchaseEmail({ code, expiresAt, invoiceData }) {
+  const facturaHtml = buildInvoiceHtml(invoiceData);
+  
   return {
-    subject: 'Tu licencia de TuAppGo',
-    text:
-`Tuappgo te agradece tu confianza por tu compra.
-
-Tu código de licencia:
-${code}
-
-Válida hasta: ${expires}
-
-Cómo activar:
-1) Abre la app
-2) Ajustes -> Licencia
-3) Pega el código y activa
-
-Importante:
-- La licencia es para 1 dispositivo.
-- Incluye 1 cambio de dispositivo al año (gestionado por soporte).
-
-Soporte: ${supportEmail}
-`,
-    html:
-`<p>Tuappgo te agradece tu confianza por tu compra.</p>
-<p><strong>Tu código de licencia:</strong><br>
-<span style="font-size:18px;letter-spacing:1px;">${code}</span></p>
-<p><strong>Válida hasta:</strong> ${expires}</p>
-<p><strong>Cómo activar:</strong><br>
-1) Abre la app<br>
-2) Ajustes → Licencia<br>
-3) Pega el código y activa</p>
-<p><strong>Importante:</strong><br>
-- La licencia es para 1 dispositivo.<br>
-- Incluye 1 cambio de dispositivo al año (gestionado por soporte).</p>
-<p><strong>Soporte:</strong> ${supportEmail}</p>`,
+    subject: 'Tu licencia y factura de TuAppGo',
+    html: `
+      <div style="font-family:Arial, sans-serif; color:#333;">
+        <p>Tuappgo te agradece tu confianza por tu compra.</p>
+        <p><strong>Tu código de licencia:</strong><br>
+        <span style="font-size:18px;letter-spacing:1px; color:#2a6edb;">${code}</span></p>
+        <p><strong>Válida hasta:</strong> ${invoiceData.fecha}</p>
+        <p><strong>Cómo activar:</strong><br>
+        1) Abre la app<br>
+        2) Ajustes → Licencia<br>
+        3) Pega el código y activa</p>
+        
+        ${facturaHtml}
+        
+        <p style="margin-top:20px;"><strong>Importante:</strong><br>
+        - La licencia es para 1 dispositivo.<br>
+        - Incluye 1 cambio de dispositivo al año.</p>
+      </div>
+    `,
   };
 }
 
 function emailSignatureHtml() {
   return `
-  <hr style="margin-top:30px; border:none; border-top:1px solid #e0e0e0;" />
   <div style="margin-top:20px; font-family:Arial, sans-serif; font-size:13px; color:#555;">
-    <img
-      src="https://tuappgo.com/contratos/assets/logo-tuappgo.png"
-      alt="TuAppGo"
-      style="height:100px; max-width:220px; margin-bottom:12px; display:block;"
-    />
-    <div style="margin-top:8px;">
-      <strong>TuAppGo</strong><br />
-      Automatización de contratos y documentos<br />
-      <a href="https://tuappgo.com" style="color:#2a6edb; text-decoration:none;">
-        https://tuappgo.com
-      </a><br />
-      <span style="color:#777;">contacto@tuappgo.com</span>
-    </div>
+    <hr style="border:none; border-top:1px solid #eee; margin-bottom:15px;" />
+    <strong>TuAppGo</strong><br />
+    Automatización de contratos y documentos<br />
+    <a href="https://tuappgo.com" style="color:#2a6edb; text-decoration:none;">https://tuappgo.com</a><br />
+    <span style="color:#777;">contacto@tuappgo.com</span>
   </div>
 `;
 }
@@ -105,20 +161,16 @@ async function listManualOrders(req, res) {
     if (!db) return res.status(503).json({ ok: false, code: 'FIRESTORE_NOT_READY' });
 
     const status = String(req.query?.status || 'pending');
-    const q = db.collection('manual_orders')
-  .where('status', '==', status)
-  .limit(200);
+    const q = db.collection('manual_orders').where('status', '==', status).limit(200);
 
-const snap = await q.get();
+    const snap = await q.get();
+    let items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-let items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-// Ordenamos aquí (sin forzar índice en Firestore)
-items.sort((a, b) => {
-  const aSec = a?.createdAt?._seconds ?? 0;
-  const bSec = b?.createdAt?._seconds ?? 0;
-  return bSec - aSec;
-});
+    items.sort((a, b) => {
+      const aSec = a?.createdAt?._seconds ?? 0;
+      const bSec = b?.createdAt?._seconds ?? 0;
+      return bSec - aSec;
+    });
 
     return res.json({ ok: true, items, priceEur: getPriceEur() });
   } catch (err) {
@@ -137,7 +189,6 @@ async function completeManualOrder(req, res) {
 
     const orderRef = db.collection('manual_orders').doc(id);
 
-    // transacción: validar estado y marcar como "paid_processing"
     const order = await db.runTransaction(async (tx) => {
       const snap = await tx.get(orderRef);
       if (!snap.exists) throw new Error('ORDER_NOT_FOUND');
@@ -151,70 +202,59 @@ async function completeManualOrder(req, res) {
         amount: getPriceEur(),
         currency: 'EUR',
       });
-
       return { id: snap.id, ...o };
     });
 
     const email = String(order.email || '').trim().toLowerCase();
-    if (!email || !email.includes('@')) {
-      await orderRef.update({
-        status: 'error',
-        lastError: 'INVALID_EMAIL',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      return res.status(400).json({ ok: false, code: 'INVALID_EMAIL' });
-    }
-
-    // crear licencia (source manual)
+    
+    // Generar licencia
     const paidAtDate = new Date();
     const expiresAtDate = new Date(paidAtDate);
     expiresAtDate.setFullYear(expiresAtDate.getFullYear() + 1);
-
     const code = await generateUniqueLicenseCode(db, { collectionName: 'licenses' });
 
     const licRef = db.collection('licenses').doc(code);
-    const paidAtTs = admin.firestore.Timestamp.fromDate(paidAtDate);
-    const expiresAtTs = admin.firestore.Timestamp.fromDate(expiresAtDate);
-
+    
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(licRef);
       if (snap.exists) throw new Error('LICENSE_COLLISION');
-
       tx.create(licRef, {
-        code,
-        email,
-        status: 'active',
-
+        code, email, status: 'active',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        paidAt: paidAtTs,
-        expiresAt: expiresAtTs,
-
-        activatedUuid: null,
-        activatedAt: null,
-
-        deviceChangeUsed: false,
-        deviceChangedAt: null,
-
-        recoveryUsed: false,
-        recoveryUsedAt: null,
-
+        paidAt: admin.firestore.Timestamp.fromDate(paidAtDate),
+        expiresAt: admin.firestore.Timestamp.fromDate(expiresAtDate),
+        activatedUuid: null, activatedAt: null,
+        deviceChangeUsed: false, deviceChangedAt: null,
+        recoveryUsed: false, recoveryUsedAt: null,
         source: 'manual',
-        manual: {
-          orderId: id,
-          metodo: order.metodo || null,
-          referencia: order.referencia || null,
-        },
-
+        manual: { orderId: id, metodo: order.metodo || null, referencia: order.referencia || null },
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        lastError: null,
       });
     });
 
-    // enviar email (igual que Stripe)
-    const transporter = buildTransporter();
-    const supportEmail = process.env.SUPPORT_EMAIL || 'contacto@tuappgo.com';
+    // --- LÓGICA DE FACTURA ---
+    const numFactura = await getNextInvoiceNumber(db);
+    const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
+    const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
+    
+    const totalVal = getPriceEur();
+    const total = totalVal.toFixed(2);
+    const base = "130.00";
+    const iva = (130 * (ivaPerc / 100)).toFixed(2);
+    const ret = (130 * (retPerc / 100)).toFixed(2);
 
-    const mail = buildPurchaseEmail({ code, expiresAt: expiresAtDate, supportEmail });
+    const invoiceData = {
+      numero: numFactura,
+      fecha: new Date().toLocaleDateString('es-ES'),
+      base: base.replace('.', ','),
+      iva: iva.replace('.', ','),
+      ret: ret.replace('.', ','),
+      total: total.replace('.', ','),
+      ivaPerc, retPerc
+    };
+
+    const transporter = buildTransporter();
+    const mail = buildPurchaseEmail({ code, expiresAt: expiresAtDate, invoiceData });
     const finalHtml = `${mail.html}${emailSignatureHtml()}`;
 
     try {
@@ -222,11 +262,9 @@ async function completeManualOrder(req, res) {
         from: requireEnv('SMTP_FROM'),
         to: email,
         subject: mail.subject,
-        text: mail.text,
         html: finalHtml,
       });
     } catch (mailErr) {
-      // no rompemos el proceso, pero registramos error
       await orderRef.update({
         status: 'license_created_email_failed',
         licenseCode: code,
@@ -236,22 +274,16 @@ async function completeManualOrder(req, res) {
       return res.json({ ok: true, licenseCode: code, warning: 'EMAIL_FAILED' });
     }
 
-    // cerrar pedido
     await orderRef.update({
       status: 'license_sent',
       licenseCode: code,
+      invoice: numFactura,
       sentAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
     return res.json({ ok: true, licenseCode: code });
   } catch (err) {
-    const msg = String(err?.message || err);
-
-    // errores esperados
-    if (msg === 'ORDER_NOT_FOUND') return res.status(404).json({ ok: false, code: 'ORDER_NOT_FOUND' });
-    if (msg === 'ORDER_NOT_PENDING') return res.status(409).json({ ok: false, code: 'ORDER_NOT_PENDING' });
-
     console.error('❌ completeManualOrder', err);
     return res.status(500).json({ ok: false, code: 'SERVER_ERROR' });
   }
@@ -279,7 +311,6 @@ function adminHtmlPage() {
     table{width:100%; border-collapse:collapse; margin-top:10px;}
     th,td{padding:10px; border-bottom:1px solid rgba(255,255,255,.08); font-size:13px; vertical-align:top;}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;}
-    .muted{opacity:.75}
     .pill{display:inline-block; padding:4px 8px; border-radius:999px; background:rgba(255,255,255,.10); font-size:12px;}
   </style>
 </head>
@@ -288,24 +319,19 @@ function adminHtmlPage() {
 <main>
   <div class="card">
     <div class="row">
-      <input id="key" type="password" placeholder="ADMIN_KEY (se guarda en este navegador)" style="flex:1; min-width:240px;">
+      <input id="key" type="password" placeholder="ADMIN_KEY" style="flex:1; min-width:240px;">
       <select id="status">
         <option value="pending">Pendientes</option>
         <option value="license_sent">Enviadas</option>
         <option value="paid_processing">Procesando</option>
-        <option value="license_created_email_failed">Email falló</option>
         <option value="error">Error</option>
       </select>
       <button class="btn" onclick="saveKey()">Guardar clave</button>
       <button class="btn3" onclick="load()">Cargar</button>
     </div>
-    <div class="muted" style="margin-top:8px;">
-      El envío genera licencia y manda email desde <span class="mono">SMTP_FROM</span>. Precio actual: <span id="price" class="pill">—</span>
-    </div>
   </div>
-
   <div class="card">
-    <div id="msg" class="muted">—</div>
+    <div id="msg" class="muted">Lista de pedidos</div>
     <div style="overflow:auto;">
       <table>
         <thead>
@@ -323,80 +349,42 @@ function adminHtmlPage() {
     </div>
   </div>
 </main>
-
 <script>
   const KEY_LS = 'tuappgo_admin_key';
   const keyInput = document.getElementById('key');
   const statusSel = document.getElementById('status');
   const rowsEl = document.getElementById('rows');
   const msgEl = document.getElementById('msg');
-  const priceEl = document.getElementById('price');
-
   keyInput.value = localStorage.getItem(KEY_LS) || '';
-
-  function saveKey(){
-    localStorage.setItem(KEY_LS, keyInput.value.trim());
-    msgEl.textContent = 'Clave guardada en este navegador.';
-  }
-
+  function saveKey(){ localStorage.setItem(KEY_LS, keyInput.value.trim()); msgEl.textContent = 'Clave guardada.'; }
   async function api(path, opts={}){
     const key = (localStorage.getItem(KEY_LS) || '').trim();
     const headers = Object.assign({'x-admin-key': key}, opts.headers || {});
     const r = await fetch(path, Object.assign({}, opts, {headers}));
-    const j = await r.json().catch(()=>({ok:false, code:'BAD_JSON'}));
-    if(!r.ok) throw new Error(j.code || ('HTTP_'+r.status));
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.code || 'ERROR');
     return j;
   }
-
-  function esc(s){ return String(s||'').replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
-
   async function load(){
-    rowsEl.innerHTML = '';
-    msgEl.textContent = 'Cargando...';
+    rowsEl.innerHTML = 'Cargando...';
     try{
-      const st = statusSel.value;
-      const j = await api('/api/admin/manual-orders?status=' + encodeURIComponent(st));
-      priceEl.textContent = (j.priceEur ? (j.priceEur + ' €') : '—');
-      const items = j.items || [];
-      msgEl.textContent = 'Registros: ' + items.length;
-
-      rowsEl.innerHTML = items.map(o => {
-        const created = o.createdAt && o.createdAt._seconds ? new Date(o.createdAt._seconds*1000) : null;
-        const dateTxt = created ? created.toLocaleString('es-ES') : '—';
-        const actionBtn = (o.status === 'pending')
-          ? '<button class="btn2" onclick="complete(\\''+esc(o.id)+'\\')">Marcar pagado + enviar licencia</button>'
-          : '—';
-
-        return '<tr>'
-          + '<td>' + esc(dateTxt) + '</td>'
-          + '<td><span class="pill">' + esc(o.metodo||'') + '</span></td>'
-          + '<td>' + esc(o.email||'') + '</td>'
-          + '<td class="mono">' + esc(o.referencia||'') + '</td>'
-          + '<td>' + esc(o.status||'') + (o.licenseCode ? '<br><span class="mono">'+esc(o.licenseCode)+'</span>' : '') + '</td>'
-          + '<td>' + actionBtn + '</td>'
-          + '</tr>';
-      }).join('');
-    }catch(e){
-      msgEl.textContent = 'Error: ' + e.message;
-    }
+      const j = await api('/api/admin/manual-orders?status=' + statusSel.value);
+      rowsEl.innerHTML = (j.items || []).map(o => \`
+        <tr>
+          <td>\${new Date(o.createdAt._seconds*1000).toLocaleString()}</td>
+          <td>\${o.metodo}</td>
+          <td>\${o.email}</td>
+          <td>\${o.referencia}</td>
+          <td>\${o.status}</td>
+          <td>\${o.status==='pending' ? '<button class="btn2" onclick="complete(\\''+o.id+'\\')">Confirmar pago y enviar factura</button>':''}</td>
+        </tr>\`).join('');
+    }catch(e){ msgEl.textContent = e.message; }
   }
-
   async function complete(id){
-    if(!confirm('¿Marcar como pagado y ENVIAR licencia?')) return;
-    msgEl.textContent = 'Procesando ' + id + '...';
-    try{
-      const j = await api('/api/admin/manual-orders/' + encodeURIComponent(id) + '/complete', { method:'POST' });
-      msgEl.textContent = 'OK. Licencia: ' + (j.licenseCode || '—');
-      await load();
-    }catch(e){
-      msgEl.textContent = 'Error: ' + e.message;
-    }
+    if(!confirm('¿Enviar factura y licencia?')) return;
+    try{ await api('/api/admin/manual-orders/'+id+'/complete', {method:'POST'}); load(); }
+    catch(e){ alert(e.message); }
   }
-
-  window.load = load;
-  window.complete = complete;
-  window.saveKey = saveKey;
-
   load();
 </script>
 </body>
@@ -408,9 +396,4 @@ function adminPageHandler(req, res) {
   res.send(adminHtmlPage());
 }
 
-module.exports = {
-  requireAdmin,
-  listManualOrders,
-  completeManualOrder,
-  adminPageHandler,
-};
+module.exports = { requireAdmin, listManualOrders, completeManualOrder, adminPageHandler };
