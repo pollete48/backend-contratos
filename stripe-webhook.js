@@ -26,6 +26,20 @@ function buildTransporter() {
   });
 }
 
+function formatDateES(date) {
+  const d = date?.toDate
+    ? date.toDate()
+    : (date instanceof Date ? date : new Date(date));
+
+  if (Number.isNaN(d.getTime())) return '—';
+
+  return d.toLocaleDateString('es-ES', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+}
+
 /**
  * Lógica de Contador de Factura con reseteo anual
  */
@@ -51,24 +65,12 @@ async function getNextInvoiceNumber(db) {
   });
 }
 
-function formatDateES(date) {
-  const d = date?.toDate
-    ? date.toDate()
-    : (date instanceof Date ? date : new Date(date));
-
-  if (Number.isNaN(d.getTime())) return '—';
-
-  return d.toLocaleDateString('es-ES', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-}
-
 /**
- * Genera el cuerpo del email y el diseño de la factura
+ * Genera el diseño de la factura y el email
  */
-function buildInvoiceTemplate(invoiceData, code, supportEmail) {
+function buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData }) {
+  const expires = formatDateES(expiresAt);
+  
   const emisor = {
     nombre: process.env.EMPRESA_NOMBRE || '',
     dni: process.env.EMPRESA_DNI || '',
@@ -120,27 +122,19 @@ function buildInvoiceTemplate(invoiceData, code, supportEmail) {
     </div>
   `;
 
-  const footerHtml = `
-    <div style="margin-top:20px; font-family:Arial, sans-serif; font-size:13px; color:#555;">
-      <hr style="border:none; border-top:1px solid #eee; margin-bottom:15px;" />
-      <strong>TuAppGo</strong><br />
-      Automatización de contratos y documentos<br />
-      <a href="https://tuappgo.com" style="color:#2a6edb; text-decoration:none;">https://tuappgo.com</a>
-    </div>
-  `;
-
   return {
+    subject: 'Tu licencia y factura de TuAppGo',
+    text: `Tuappgo agradece tu confianza.\n\nLicencia: ${code}\nFactura: ${invoiceData.numero}\nTotal: ${invoiceData.total}€`,
     html: `
       <div style="font-family:Arial, sans-serif; color:#333;">
         <p>Tuappgo te agradece tu confianza por tu compra.</p>
         <p><strong>Tu código de licencia:</strong><br>
         <span style="font-size:18px;letter-spacing:1px; color:#2a6edb;">${code}</span></p>
-        <p><strong>Válida hasta:</strong> ${invoiceData.fecha}</p>
+        <p><strong>Válida hasta:</strong> ${expires}</p>
         <p><strong>Cómo activar:</strong> Abre la app, ve a Ajustes → Licencia, pega el código y activa.</p>
         <p>Adjuntamos a este email su factura detallada en formato PDF.</p>
         ${facturaHtml}
         <p style="margin-top:20px; font-size:12px; color:#777;">Soporte: ${supportEmail}</p>
-        ${footerHtml}
       </div>
     `,
     facturaSoloHtml: `<html><body>${facturaHtml}</body></html>`
@@ -155,7 +149,6 @@ async function stripeWebhookHandler(req, res) {
     const signature = req.headers['stripe-signature'];
     event = stripe.webhooks.constructEvent(req.body, signature, webhookSecret);
   } catch (err) {
-    console.error('[webhook] Signature error:', err.message);
     return res.status(400).send(`Webhook signature error: ${err.message}`);
   }
 
@@ -165,7 +158,6 @@ async function stripeWebhookHandler(req, res) {
   const eventsCol = db.collection('stripe_events');
   const eventRef = eventsCol.doc(event.id);
 
-  // Idempotencia: evitar procesar dos veces el mismo evento
   try {
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(eventRef);
@@ -184,24 +176,22 @@ async function stripeWebhookHandler(req, res) {
     return res.status(500).send(`Idempotency error: ${e.message}`);
   }
 
-  // Solo nos interesa checkout.session.completed
-  if (event.type !== 'checkout.session.completed') {
-    await eventRef.set({ status: 'ignored', processedAt: new Date() }, { merge: true });
-    return res.json({ received: true });
-  }
-
-  const session = event.data.object;
-  if (session.payment_status !== 'paid') {
-    await eventRef.set({ status: 'ignored', reason: 'not_paid', processedAt: new Date() }, { merge: true });
-    return res.json({ received: true });
-  }
-
   try {
+    if (event.type !== 'checkout.session.completed') {
+      await eventRef.set({ status: 'ignored', processedAt: new Date() }, { merge: true });
+      return res.json({ received: true });
+    }
+
+    const session = event.data.object;
+    if (session.payment_status !== 'paid') {
+      await eventRef.set({ status: 'ignored', reason: 'not_paid', processedAt: new Date() }, { merge: true });
+      return res.json({ received: true });
+    }
+
     const customerEmail = (session.customer_details?.email || session.customer_email).toLowerCase();
     const stripeSessionId = session.id;
     const paymentIntentId = session.payment_intent || null;
 
-    // Verificar si ya existe licencia para esta sesión
     const existing = await db.collection('licenses').where('stripe.sessionId', '==', stripeSessionId).limit(1).get();
     if (!existing.empty) {
       await eventRef.set({ status: 'processed', note: 'License already exists' }, { merge: true });
@@ -210,7 +200,7 @@ async function stripeWebhookHandler(req, res) {
 
     const paidAt = new Date(session.created * 1000);
 
-    // 1. Generar Licencia
+    // 1. Crear licencia
     const { code, expiresAt } = await createLicenseFromStripe(db, {
       email: customerEmail,
       stripeSessionId,
@@ -221,61 +211,57 @@ async function stripeWebhookHandler(req, res) {
       collectionName: 'licenses',
     });
 
-    // 2. Lógica de Factura
+    // 2. Datos de Factura
     const numFactura = await getNextInvoiceNumber(db);
     const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
     const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
-    
     const totalRaw = (session.amount_total / 100).toFixed(2);
-    const baseVal = "130.00";
-    const ivaVal = (130 * (ivaPerc / 100)).toFixed(2);
-    const retVal = (130 * (retPerc / 100)).toFixed(2);
-
+    
     const invoiceData = {
       numero: numFactura,
       fecha: new Date().toLocaleDateString('es-ES'),
-      base: baseVal.replace('.', ','),
-      iva: ivaVal.replace('.', ','),
-      ret: retVal.replace('.', ','),
+      base: "130,00",
+      iva: (130 * (ivaPerc / 100)).toFixed(2).replace('.', ','),
+      ret: (130 * (retPerc / 100)).toFixed(2).replace('.', ','),
       total: totalRaw.replace('.', ','),
       ivaPerc,
       retPerc
     };
 
     const supportEmail = process.env.SUPPORT_EMAIL || 'contacto@tuappgo.com';
-    const emailTemplates = buildInvoiceTemplate(invoiceData, code, supportEmail);
+    const mailTemplates = buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData });
 
-    // 3. Generar PDF Buffer
-    const options = { format: 'A4' };
-    const pdfBuffer = await htmlPdf.generatePdf({ content: emailTemplates.facturaSoloHtml }, options);
+    // 3. Generar PDF
+    const pdfBuffer = await htmlPdf.generatePdf({ content: mailTemplates.facturaSoloHtml }, { format: 'A4' });
 
-    // 4. Enviar Email con Adjunto
+    // 4. Enviar Email
     const transporter = buildTransporter();
+    const emailSignatureHtml = `
+      <hr style="margin-top:30px; border:none; border-top:1px solid #e0e0e0;" />
+      <div style="margin-top:20px; font-family:Arial, sans-serif; font-size:13px; color:#555;">
+        <img src="https://tuappgo.com/contratos/assets/logo-tuappgo.png" alt="TuAppGo" style="height:80px; display:block; margin-bottom:12px;" />
+        <strong>TuAppGo</strong><br />
+        <a href="https://tuappgo.com" style="color:#2a6edb; text-decoration:none;">https://tuappgo.com</a>
+      </div>
+    `;
+
     await transporter.sendMail({
       from: requireEnv('SMTP_FROM'),
       to: customerEmail.trim(),
-      subject: 'Tu licencia y factura de TuAppGo',
-      html: emailTemplates.html,
-      attachments: [
-        {
-          filename: `Factura_${numFactura.replace('/', '-')}.pdf`,
-          content: pdfBuffer
-        }
-      ]
+      subject: mailTemplates.subject,
+      text: mailTemplates.text,
+      html: `${mailTemplates.html}${emailSignatureHtml}`,
+      attachments: [{
+        filename: `Factura_${numFactura.replace('/', '-')}.pdf`,
+        content: pdfBuffer
+      }]
     });
 
-    await eventRef.set({
-      status: 'processed',
-      processedAt: new Date(),
-      licenseCode: code,
-      invoiceNumber: numFactura,
-      email: customerEmail
-    }, { merge: true });
-
+    await eventRef.set({ status: 'processed', processedAt: new Date(), licenseCode: code, invoice: numFactura }, { merge: true });
     return res.json({ received: true });
 
   } catch (err) {
-    console.error('[webhook] Error procesando sesión:', err);
+    console.error('[webhook] Error:', err);
     try {
       await eventRef.set({ status: 'error', error: err.message, processedAt: new Date() }, { merge: true });
     } catch {}
