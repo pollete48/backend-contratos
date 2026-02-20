@@ -1,6 +1,6 @@
 const Stripe = require('stripe');
 const nodemailer = require('nodemailer');
-const htmlPdf = require('html-pdf-node'); // Mejora 3: PDF
+const htmlPdf = require('html-pdf-node');
 const { createLicenseFromStripe } = require('./license-issue');
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
@@ -64,8 +64,6 @@ function buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData }) {
     email: process.env.EMPRESA_EMAIL || ''
   };
 
-  // Mejora 1: Logo 105px (30% más grande que 80px)
-  // Mejora 2: Disposición vertical descendente
   const facturaHtml = `
     <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px; color:#333; max-width: 500px;">
       <table style="width:100%;">
@@ -186,25 +184,37 @@ async function stripeWebhookHandler(req, res) {
     const numFactura = await getNextInvoiceNumber(db);
     const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
     const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
-    const totalRaw = (session.amount_total / 100).toFixed(2);
+    const baseVal = parseFloat(process.env.PRECIO_BASE || '130.00');
+    const totalVal = session.amount_total / 100;
     
     const invoiceData = {
       numero: numFactura,
       fecha: new Date().toLocaleDateString('es-ES'),
-      base: "130,00",
-      iva: (130 * (ivaPerc / 100)).toFixed(2).replace('.', ','),
-      ret: (130 * (retPerc / 100)).toFixed(2).replace('.', ','),
-      total: totalRaw.replace('.', ','),
+      base: baseVal.toFixed(2).replace('.', ','),
+      iva: (baseVal * (ivaPerc / 100)).toFixed(2).replace('.', ','),
+      ret: (baseVal * (retPerc / 100)).toFixed(2).replace('.', ','),
+      total: totalVal.toFixed(2).replace('.', ','),
       ivaPerc,
       retPerc
     };
 
+    // REGISTRO EN EL LIBRO DE FACTURAS EMITIDAS
+    await db.collection('invoices').doc(numFactura.replace('/', '-')).set({
+      invoiceNumber: numFactura,
+      date: admin.firestore.FieldValue.serverTimestamp(),
+      email: customerEmail,
+      base: baseVal,
+      iva: parseFloat((baseVal * (ivaPerc / 100)).toFixed(2)),
+      ret: parseFloat((baseVal * (retPerc / 100)).toFixed(2)),
+      total: totalVal,
+      method: 'stripe',
+      stripeSessionId: stripeSessionId
+    });
+
     const supportEmail = process.env.SUPPORT_EMAIL || 'contacto@tuappgo.com';
     const mailContent = buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData });
 
-    // Mejora 3: Generar PDF
-    const options = { format: 'A4' };
-    const pdfBuffer = await htmlPdf.generatePdf({ content: mailContent.facturaSoloHtml }, options);
+    const pdfBuffer = await htmlPdf.generatePdf({ content: mailContent.facturaSoloHtml }, { format: 'A4' });
 
     const transporter = buildTransporter();
     await transporter.sendMail({
