@@ -97,7 +97,7 @@ function buildInvoiceHtml(invoiceData) {
           <td style="padding:10px 0; border-bottom:1px solid #eee; text-align:right; color:#d9534f;">-${invoiceData.ret}€</td>
         </tr>
         <tr style="font-weight:bold;">
-          <td style="padding:15px 0; font-size:1.1em;">TOTAL</td>
+          <td style="padding:15px 0; font-size:1.1em;">TOTAL PAGADO</td>
           <td style="padding:15px 0; text-align:right; font-size:1.1em; color:#28a745;">${invoiceData.total}€</td>
         </tr>
       </table>
@@ -156,6 +156,11 @@ function requireAdmin(req, res, next) {
 function getPriceEur() {
   const p = Number(process.env.PRICE_EUR || 0);
   return Number.isFinite(p) ? p : 0;
+}
+
+function getBaseImponible() {
+  const b = Number(process.env.PRECIO_BASE || 130.00);
+  return Number.isFinite(b) ? b : 130.00;
 }
 
 async function listManualOrders(req, res) {
@@ -241,10 +246,11 @@ async function completeManualOrder(req, res) {
     const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
     
     const totalVal = getPriceEur();
+    const baseVal = getBaseImponible();
     const total = totalVal.toFixed(2);
-    const base = "130.00";
-    const iva = (130 * (ivaPerc / 100)).toFixed(2);
-    const ret = (130 * (retPerc / 100)).toFixed(2);
+    const base = baseVal.toFixed(2);
+    const iva = (baseVal * (ivaPerc / 100)).toFixed(2);
+    const ret = (baseVal * (retPerc / 100)).toFixed(2);
 
     const invoiceData = {
       numero: numFactura,
@@ -255,6 +261,19 @@ async function completeManualOrder(req, res) {
       total: total.replace('.', ','),
       ivaPerc, retPerc
     };
+
+    // REGISTRO EN EL LIBRO DE FACTURAS EMITIDAS
+    await db.collection('invoices').doc(numFactura.replace('/', '-')).set({
+      invoiceNumber: numFactura,
+      date: admin.firestore.FieldValue.serverTimestamp(),
+      email: email,
+      base: parseFloat(base),
+      iva: parseFloat(iva),
+      ret: parseFloat(ret),
+      total: parseFloat(total),
+      method: order.metodo || 'manual',
+      orderId: id
+    });
 
     const mail = buildPurchaseEmail({ code, expiresAt: expiresAtDate, invoiceData });
     const finalHtml = `${mail.html}${emailSignatureHtml()}`;
