@@ -1,11 +1,10 @@
-// manual-payment.js
 const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
 const htmlPdf = require('html-pdf-node');
 const { generateUniqueLicenseCode } = require('./license-issue');
 
 /**
- * Utilidades de validación de entorno
+ * Utilidades de Configuración
  */
 function requireEnv(name) {
   const v = process.env[name];
@@ -13,9 +12,6 @@ function requireEnv(name) {
   return v;
 }
 
-/**
- * Configuración del transporte de email
- */
 function buildTransporter() {
   return nodemailer.createTransport({
     host: requireEnv('SMTP_HOST'),
@@ -28,8 +24,17 @@ function buildTransporter() {
   });
 }
 
+function safeTrim(v) {
+  return String(v || '').trim();
+}
+
+function getPriceEurFromEnv() {
+  const p = Number(process.env.PRICE_EUR || 0);
+  return Number.isFinite(p) && p > 0 ? p : 0;
+}
+
 /**
- * Gestión del contador de facturas (con bloqueo de transacción)
+ * Contador de Facturas con reseteo anual
  */
 async function getNextInvoiceNumber(db) {
   const yearNow = new Date().getFullYear();
@@ -38,22 +43,25 @@ async function getNextInvoiceNumber(db) {
   return await db.runTransaction(async (tx) => {
     const snap = await tx.get(counterRef);
     let nextNum = 1;
+    let lastYear = yearNow;
 
     if (snap.exists) {
       const data = snap.data();
-      if (data.year === yearNow) {
+      lastYear = data.year || yearNow;
+      if (lastYear === yearNow) {
         nextNum = (data.current || 0) + 1;
       }
     }
+
     tx.set(counterRef, { current: nextNum, year: yearNow });
     return `${nextNum}/${yearNow}`;
   });
 }
 
 /**
- * Plantilla de Factura: Logo 30% más grande y Tabla Descendente
+ * Genera el diseño de la factura y el cuerpo del email
  */
-function buildInvoiceTemplate(invoiceData, code, supportEmail) {
+function buildManualInvoiceTemplate(invoiceData, code, supportEmail) {
   const emisor = {
     nombre: process.env.EMPRESA_NOMBRE || '',
     dni: process.env.EMPRESA_DNI || '',
@@ -105,12 +113,12 @@ function buildInvoiceTemplate(invoiceData, code, supportEmail) {
   `;
 
   return {
-    htmlBody: `
+    html: `
       <div style="font-family:Arial, sans-serif; color:#333;">
-        <p>Tuappgo agradece su confianza y le informa de que su pago manual ha sido verificado con éxito.</p>
-        <p><strong>Su código de licencia:</strong><br>
+        <p>Tuappgo te agradece tu confianza. Hemos verificado tu pago manual correctamente.</p>
+        <p><strong>Tu código de licencia:</strong><br>
         <span style="font-size:18px;letter-spacing:1px; color:#2a6edb;">${code}</span></p>
-        <p>Adjuntamos a este email su factura detallada en formato PDF.</p>
+        <p>Ajustes → Licencia para activar. Adjuntamos factura detallada en PDF.</p>
         ${facturaHtml}
         <p style="margin-top:20px; font-size:12px; color:#777;">Soporte: ${supportEmail}</p>
       </div>
@@ -120,113 +128,148 @@ function buildInvoiceTemplate(invoiceData, code, supportEmail) {
 }
 
 /**
- * Paso 1: El usuario solicita pago manual (crea orden pendiente)
+ * 1. Crea la orden pendiente (Desde el cliente)
  */
 async function createManualOrder(req, res) {
   try {
     const db = req.app?.locals?.db;
-    const { email, method } = req.body;
-    if (!email || !method) return res.status(400).json({ ok: false, error: 'Faltan datos' });
+    if (!db) return res.status(500).json({ ok: false, error: 'Database not initialized' });
 
-    const newOrder = {
-      email: email.toLowerCase().trim(),
-      method: method, // 'bizum' o 'transferencia'
+    const metodo = safeTrim(req.body?.metodo).toLowerCase();
+    const email = safeTrim(req.body?.email);
+
+    if (!email || !metodo) {
+      return res.status(400).json({ ok: false, error: 'Faltan datos obligatorios' });
+    }
+
+    const amount = getPriceEurFromEnv();
+    const referencia = `TUAPP-${Math.random().toString(36).toUpperCase().slice(2, 8)}`;
+
+    const orderDoc = {
+      metodo,
+      email: email.toLowerCase(),
       status: 'pending',
+      amount,
+      referencia,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      priceEur: Number(process.env.PRICE_EUR || 135)
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
 
-    const docRef = await db.collection('manual_orders').add(newOrder);
-    return res.json({ ok: true, orderId: docRef.id });
-  } catch (err) {
-    console.error('Error createManualOrder:', err);
-    return res.status(500).json({ ok: false });
-  }
-}
+    const ref = await db.collection('manual_orders').add(orderDoc);
 
-/**
- * Paso 2: El admin confirma el pago (genera licencia, factura y PDF)
- */
-async function confirmManualOrder(req, res) {
-  try {
-    const db = req.app?.locals?.db;
-    const { orderId } = req.body;
-    if (!orderId) return res.status(400).json({ ok: false, error: 'orderId requerido' });
-
-    const orderRef = db.collection('manual_orders').doc(orderId);
-    
-    // Transacción para asegurar que no se procese dos veces
-    const result = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(orderRef);
-      if (!snap.exists) throw new Error('Orden no encontrada');
-      if (snap.data().status !== 'pending') throw new Error('La orden ya ha sido procesada');
-
-      const orderData = snap.data();
-      const code = await generateUniqueLicenseCode(db, { collectionName: 'licenses' });
-      const numFactura = await getNextInvoiceNumber(db);
-
-      tx.update(orderRef, {
-        status: 'completed',
-        licenseCode: code,
-        invoiceNumber: numFactura,
-        confirmedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-      return { orderData, code, numFactura };
+    return res.json({
+      ok: true,
+      orderId: ref.id,
+      referencia,
+      amount
     });
-
-    const { orderData, code, numFactura } = result;
-
-    // Cálculos de factura
-    const ivaP = parseFloat(process.env.IVA_PORCENTAJE || '21');
-    const retP = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
-    const totalVal = orderData.priceEur || Number(process.env.PRICE_EUR || 135);
-    
-    // Cálculos basados en la base de 130€
-    const invoiceData = {
-      numero: numFactura,
-      fecha: new Date().toLocaleDateString('es-ES'),
-      base: "130,00",
-      iva: (130 * (ivaP / 100)).toFixed(2).replace('.', ','),
-      ret: (130 * (retP / 100)).toFixed(2).replace('.', ','),
-      total: totalVal.toFixed(2).replace('.', ','),
-      ivaPerc: ivaP,
-      retPerc: retP
-    };
-
-    const supportEmail = process.env.SUPPORT_EMAIL || 'contacto@tuappgo.com';
-    const templates = buildInvoiceTemplate(invoiceData, code, supportEmail);
-
-    // Generación de PDF
-    const pdfBuffer = await htmlPdf.generatePdf(
-      { content: templates.facturaSoloHtml }, 
-      { format: 'A4', margin: { top: '20px', bottom: '20px', left: '20px', right: '20px' } }
-    );
-
-    // Envío de Email
-    const transporter = buildTransporter();
-    await transporter.sendMail({
-      from: requireEnv('SMTP_FROM'),
-      to: orderData.email,
-      subject: 'Pago confirmado - Tu licencia y factura TuAppGo',
-      html: templates.htmlBody,
-      attachments: [
-        {
-          filename: `Factura_${numFactura.replace('/', '-')}.pdf`,
-          content: pdfBuffer
-        }
-      ]
-    });
-
-    return res.json({ ok: true, licenseCode: code, invoiceNumber: numFactura });
-
   } catch (err) {
-    console.error('Error confirmManualOrder:', err);
+    console.error('[createManualOrder] Error:', err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 }
 
+/**
+ * 2. Completa la orden, genera licencia y envía factura (Desde Admin Panel)
+ */
+async function completeManualOrder(req, res) {
+  try {
+    const db = req.app?.locals?.db;
+    if (!db) return res.status(500).json({ ok: false, error: 'Database not initialized' });
+
+    const orderId = req.params.id;
+    if (!orderId) return res.status(400).json({ ok: false, error: 'Falta Order ID' });
+
+    const orderRef = db.collection('manual_orders').doc(orderId);
+    const snap = await orderRef.get();
+
+    if (!snap.exists) return res.status(404).json({ ok: false, error: 'Orden no encontrada' });
+    
+    const orderData = snap.data();
+    if (orderData.status === 'license_sent') {
+      return res.status(400).json({ ok: false, error: 'Esta orden ya ha sido procesada' });
+    }
+
+    // A. Generar Licencia
+    const code = await generateUniqueLicenseCode(db, { collectionName: 'licenses' });
+    const expiresAt = new Date();
+    expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+
+    await db.collection('licenses').add({
+      code,
+      email: orderData.email,
+      status: 'active',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+      type: 'manual',
+      orderId: orderId
+    });
+
+    // B. Generar Factura
+    const numFactura = await getNextInvoiceNumber(db);
+    const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
+    const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
+    const totalEur = orderData.amount || getPriceEurFromEnv();
+    
+    const invoiceData = {
+      numero: numFactura,
+      fecha: new Date().toLocaleDateString('es-ES'),
+      base: "130,00",
+      iva: (130 * (ivaPerc / 100)).toFixed(2).replace('.', ','),
+      ret: (130 * (retPerc / 100)).toFixed(2).replace('.', ','),
+      total: totalEur.toFixed(2).replace('.', ','),
+      ivaPerc,
+      retPerc
+    };
+
+    const supportEmail = process.env.SUPPORT_EMAIL || 'contacto@tuappgo.com';
+    const templates = buildManualInvoiceTemplate(invoiceData, code, supportEmail);
+
+    // C. Generar PDF
+    const pdfBuffer = await htmlPdf.generatePdf({ content: templates.facturaSoloHtml }, { format: 'A4' });
+
+    // D. Enviar Email
+    const transporter = buildTransporter();
+    const emailSignatureHtml = `
+      <hr style="margin-top:30px; border:none; border-top:1px solid #e0e0e0;" />
+      <div style="margin-top:20px; font-family:Arial, sans-serif; font-size:13px; color:#555;">
+        <img src="https://tuappgo.com/contratos/assets/logo-tuappgo.png" alt="TuAppGo" style="height:80px; display:block; margin-bottom:12px;" />
+        <strong>TuAppGo</strong><br />
+        <a href="https://tuappgo.com" style="color:#2a6edb; text-decoration:none;">https://tuappgo.com</a>
+      </div>
+    `;
+
+    await transporter.sendMail({
+      from: requireEnv('SMTP_FROM'),
+      to: orderData.email,
+      subject: 'Tu licencia y factura de TuAppGo (Pago Manual)',
+      html: `${templates.html}${emailSignatureHtml}`,
+      attachments: [{
+        filename: `Factura_${numFactura.replace('/', '-')}.pdf`,
+        content: pdfBuffer
+      }]
+    });
+
+    // E. Actualizar Orden
+    await orderRef.update({
+      status: 'license_sent',
+      licenseCode: code,
+      invoice: numFactura,
+      processedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return res.json({ ok: true, licenseCode: code, invoice: numFactura });
+
+  } catch (err) {
+    console.error('[completeManualOrder] Error:', err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
+/**
+ * Exportaciones alineadas con el archivo de rutas
+ */
 module.exports = {
   createManualOrder,
-  confirmManualOrder
+  completeManualOrder
 };
