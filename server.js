@@ -59,18 +59,14 @@ function main() {
 
   // --- PANEL DE ADMINISTRACIÓN UNIFICADO ---
   
-  // 1. Acceso visual
   app.get('/admin', adminPanel.adminPageHandler);
 
-  // 2. SUPER-RUTA ÚNICA: Dashboard (Carga todo de golpe)
+  // Esta es la ruta que causaba el error si la función no estaba en admin-panel.js
   app.get('/api/admin/dashboard', adminPanel.requireAdmin, adminPanel.getDashboardData);
 
-  // 3. Acción de completar (Se mantiene individual por ser POST)
   app.post('/api/admin/manual-orders/:id/complete', adminPanel.requireAdmin, adminPanel.completeManualOrder);
-
   app.post('/api/admin/licencia/cambiar-dispositivo', supportChangeDeviceHandler);
 
-  // --- MANEJO DE ERRORES ---
   app.use((_req, res) => {
     res.status(404).json({ ok: false, code: 'NOT_FOUND', message: 'Ruta no encontrada' });
   });
@@ -91,7 +87,7 @@ function main() {
   requireEnv('PRECIO_BASE');
 
   app.listen(port, () => {
-    console.log(`🚀 Backend unificado en puerto ${port}`);
+    console.log(`🚀 Backend unificado escuchando`);
   });
 }
 
