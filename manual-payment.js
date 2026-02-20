@@ -43,12 +43,10 @@ async function getNextInvoiceNumber(db) {
   return await db.runTransaction(async (tx) => {
     const snap = await tx.get(counterRef);
     let nextNum = 1;
-    let lastYear = yearNow;
 
     if (snap.exists) {
       const data = snap.data();
-      lastYear = data.year || yearNow;
-      if (lastYear === yearNow) {
+      if (data.year === yearNow) {
         nextNum = (data.current || 0) + 1;
       }
     }
@@ -61,7 +59,7 @@ async function getNextInvoiceNumber(db) {
 /**
  * Genera el diseño de la factura y el cuerpo del email
  */
-function buildManualInvoiceTemplate(invoiceData, code, supportEmail) {
+function buildInvoiceTemplate(invoiceData, code, supportEmail) {
   const emisor = {
     nombre: process.env.EMPRESA_NOMBRE || '',
     dni: process.env.EMPRESA_DNI || '',
@@ -223,7 +221,8 @@ async function completeManualOrder(req, res) {
     };
 
     const supportEmail = process.env.SUPPORT_EMAIL || 'contacto@tuappgo.com';
-    const templates = buildManualInvoiceTemplate(invoiceData, code, supportEmail);
+    // AQUÍ CORREGIDO: Llamada al nombre correcto de la función
+    const templates = buildInvoiceTemplate(invoiceData, code, supportEmail);
 
     // C. Generar PDF
     const pdfBuffer = await htmlPdf.generatePdf({ content: templates.facturaSoloHtml }, { format: 'A4' });
