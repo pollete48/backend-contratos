@@ -1,6 +1,7 @@
 // admin-panel.js
 const nodemailer = require('nodemailer');
 const admin = require('firebase-admin');
+const htmlPdf = require('html-pdf-node');
 const { generateUniqueLicenseCode } = require('./license-issue');
 
 function requireEnv(name) {
@@ -48,6 +49,8 @@ async function getNextInvoiceNumber(db) {
 
 /**
  * Genera el Bloque HTML de la factura desglosada
+ * Mejora 1: Logo 105px
+ * Mejora 2: Disposición vertical descendente
  */
 function buildInvoiceHtml(invoiceData) {
   const emisor = {
@@ -59,11 +62,11 @@ function buildInvoiceHtml(invoiceData) {
   };
 
   return `
-    <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px; color:#333;">
+    <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px; color:#333; max-width: 550px;">
       <table style="width:100%;">
         <tr>
           <td style="vertical-align:top;">
-            <img src="https://tuappgo.com/contratos/assets/logo-tuappgo.png" alt="TuAppGo" style="height:60px;">
+            <img src="https://tuappgo.com/contratos/assets/logo-tuappgo.png" alt="TuAppGo" style="height:105px;">
           </td>
           <td style="text-align:right; font-size:12px; color:#555;">
             <strong>EMISOR:</strong><br>
@@ -76,29 +79,27 @@ function buildInvoiceHtml(invoiceData) {
       </table>
       
       <div style="margin-top:20px;">
-        <h3 style="margin-bottom:5px;">FACTURA: ${invoiceData.numero}</h3>
+        <h3 style="margin-bottom:5px; color:#1a1a1a;">FACTURA: ${invoiceData.numero}</h3>
         <p style="font-size:13px; margin-top:0;">Fecha: ${invoiceData.fecha}</p>
       </div>
 
-      <table style="width:100%; border-collapse:collapse; margin-top:15px; font-size:14px;">
-        <thead>
-          <tr style="background:#f4f4f4;">
-            <th style="padding:8px; text-align:left; border-bottom:1px solid #ddd;">Descripción</th>
-            <th style="padding:8px; text-align:right; border-bottom:1px solid #ddd;">Base</th>
-            <th style="padding:8px; text-align:right; border-bottom:1px solid #ddd;">IVA (${invoiceData.ivaPerc}%)</th>
-            <th style="padding:8px; text-align:right; border-bottom:1px solid #ddd;">IRPF (-${invoiceData.retPerc}%)</th>
-            <th style="padding:8px; text-align:right; border-bottom:1px solid #ddd;">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td style="padding:8px; border-bottom:1px solid #eee;">Licencia Anual TuAppGo</td>
-            <td style="padding:8px; text-align:right; border-bottom:1px solid #eee;">${invoiceData.base}€</td>
-            <td style="padding:8px; text-align:right; border-bottom:1px solid #eee;">${invoiceData.iva}€</td>
-            <td style="padding:8px; text-align:right; border-bottom:1px solid #eee; color:#d9534f;">-${invoiceData.ret}€</td>
-            <td style="padding:8px; text-align:right; border-bottom:1px solid #eee; font-weight:bold;">${invoiceData.total}€</td>
-          </tr>
-        </tbody>
+      <table style="width:100%; border-collapse:collapse; margin-top:15px; font-size:15px;">
+        <tr>
+          <td style="padding:10px 0; border-bottom:1px solid #eee;">Base Imponible</td>
+          <td style="padding:10px 0; border-bottom:1px solid #eee; text-align:right;">${invoiceData.base}€</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 0; border-bottom:1px solid #eee;">IVA (${invoiceData.ivaPerc}%)</td>
+          <td style="padding:10px 0; border-bottom:1px solid #eee; text-align:right;">${invoiceData.iva}€</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 0; border-bottom:1px solid #eee;">Retención IRPF (-${invoiceData.retPerc}%)</td>
+          <td style="padding:10px 0; border-bottom:1px solid #eee; text-align:right; color:#d9534f;">-${invoiceData.ret}€</td>
+        </tr>
+        <tr style="font-weight:bold;">
+          <td style="padding:15px 0; font-size:1.1em;">TOTAL</td>
+          <td style="padding:15px 0; text-align:right; font-size:1.1em; color:#28a745;">${invoiceData.total}€</td>
+        </tr>
       </table>
     </div>
   `;
@@ -120,6 +121,7 @@ function buildPurchaseEmail({ code, expiresAt, invoiceData }) {
         2) Ajustes → Licencia<br>
         3) Pega el código y activa</p>
         
+        <p>Adjuntamos a este email su factura detallada en formato PDF.</p>
         ${facturaHtml}
         
         <p style="margin-top:20px;"><strong>Importante:</strong><br>
@@ -127,6 +129,7 @@ function buildPurchaseEmail({ code, expiresAt, invoiceData }) {
         - Incluye 1 cambio de dispositivo al año.</p>
       </div>
     `,
+    facturaSoloHtml: `<html><body>${facturaHtml}</body></html>`
   };
 }
 
@@ -253,16 +256,23 @@ async function completeManualOrder(req, res) {
       ivaPerc, retPerc
     };
 
-    const transporter = buildTransporter();
     const mail = buildPurchaseEmail({ code, expiresAt: expiresAtDate, invoiceData });
     const finalHtml = `${mail.html}${emailSignatureHtml()}`;
 
+    // Mejora 3: Generar PDF
+    const pdfBuffer = await htmlPdf.generatePdf({ content: mail.facturaSoloHtml }, { format: 'A4' });
+
+    const transporter = buildTransporter();
     try {
       await transporter.sendMail({
         from: requireEnv('SMTP_FROM'),
         to: email,
         subject: mail.subject,
         html: finalHtml,
+        attachments: [{
+          filename: `Factura_${numFactura.replace('/', '-')}.pdf`,
+          content: pdfBuffer
+        }]
       });
     } catch (mailErr) {
       await orderRef.update({
