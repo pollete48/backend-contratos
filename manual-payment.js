@@ -16,6 +16,67 @@ function getPriceEurFromEnv() {
   return Number.isFinite(p) && p > 0 ? p : 0;
 }
 
+/**
+ * Función auxiliar para obtener la Base Imponible desde Render
+ */
+function getBaseImponibleFromEnv() {
+  const b = Number(process.env.PRECIO_BASE || 130.00);
+  return Number.isFinite(b) ? b : 130.00;
+}
+
+/**
+ * Genera el Bloque HTML de la factura desglosada (Usado para previsualización o emails)
+ * Mejora 1: Logo 105px
+ * Mejora 2: Orden descendente (Base, IVA, Ret, Total)
+ */
+function buildManualInvoiceHtml(invoiceData) {
+  const emisor = {
+    nombre: process.env.EMPRESA_NOMBRE || '',
+    dni: process.env.EMPRESA_DNI || '',
+    dir: process.env.EMPRESA_DIRECCION || '',
+    tel: process.env.EMPRESA_TELEFONO || ''
+  };
+
+  return `
+    <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px; color:#333; max-width: 500px;">
+      <table style="width:100%;">
+        <tr>
+          <td style="vertical-align:top;">
+            <img src="https://tuappgo.com/contratos/assets/logo-tuappgo.png" alt="TuAppGo" style="height:105px;">
+          </td>
+          <td style="text-align:right; font-size:12px; color:#555;">
+            <strong>EMISOR:</strong><br>${emisor.nombre}<br>${emisor.dni}<br>${emisor.dir}<br>${emisor.tel}
+          </td>
+        </tr>
+      </table>
+      
+      <div style="margin-top:20px;">
+        <h3 style="margin-bottom:5px; color:#1a1a1a;">FACTURA: ${invoiceData.numero || 'PROVISIONAL'}</h3>
+        <p style="font-size:13px; margin-top:0;">Fecha: ${invoiceData.fecha}</p>
+      </div>
+
+      <table style="width:100%; border-collapse:collapse; margin-top:15px; font-size:15px;">
+        <tr>
+          <td style="padding:10px 0; border-bottom:1px solid #eee;">Base Imponible</td>
+          <td style="padding:10px 0; border-bottom:1px solid #eee; text-align:right;">${invoiceData.base}€</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 0; border-bottom:1px solid #eee;">IVA (${invoiceData.ivaPerc}%)</td>
+          <td style="padding:10px 0; border-bottom:1px solid #eee; text-align:right;">${invoiceData.iva}€</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 0; border-bottom:1px solid #eee;">Retención IRPF (-${invoiceData.retPerc}%)</td>
+          <td style="padding:10px 0; border-bottom:1px solid #eee; text-align:right; color:#d9534f;">-${invoiceData.ret}€</td>
+        </tr>
+        <tr style="font-weight:bold; background:#f9f9f9;">
+          <td style="padding:12px 5px; font-size:1.1em;">TOTAL</td>
+          <td style="padding:12px 5px; text-align:right; font-size:1.1em; color:#28a745;">${invoiceData.total}€</td>
+        </tr>
+      </table>
+    </div>
+  `;
+}
+
 async function createManualOrderHandler(req, res) {
   try {
     const db = req.app?.locals?.db;
@@ -57,6 +118,11 @@ async function createManualOrderHandler(req, res) {
 
     const now = admin.firestore.FieldValue.serverTimestamp();
 
+    // ✅ Usamos la variable PRECIO_BASE para el desglose
+    const baseVal = getBaseImponibleFromEnv();
+    const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
+    const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
+
     const doc = {
       metodo,
       email: email.toLowerCase(),
@@ -68,9 +134,10 @@ async function createManualOrderHandler(req, res) {
       status: 'pending',
       createdAt: now,
       updatedAt: now,
-      // Guardamos porcentajes actuales para la futura factura
-      ivaPerc: parseFloat(process.env.IVA_PORCENTAJE || '21'),
-      retPerc: parseFloat(process.env.RETENCION_PORCENTAJE || '7')
+      // Guardamos valores dinámicos basados en PRECIO_BASE
+      baseImponible: baseVal,
+      ivaPerc: ivaPerc,
+      retPerc: retPerc
     };
 
     const ref = await db.collection('manual_orders').add(doc);
