@@ -27,65 +27,43 @@ function fail(res, status, code, message) {
   return res.status(status).json({ ok: false, code, message });
 }
 
-/**
- * Limpia URL de entorno:
- * - trim
- * - elimina espacios
- * - elimina query ?session_id=... si ya lo hubieran puesto en env
- * - elimina "#" final suelto
- */
 function sanitizeBaseUrl(raw) {
   const s = String(raw || '').trim();
-
-  // Si alguien metió ?session_id=... en la env, lo quitamos para no duplicarlo
   const noQuery = s.split('?')[0];
-
-  // Quita un # final suelto (por si alguien puso .../#)
   const cleaned = noQuery.endsWith('#') ? noQuery.slice(0, -1) : noQuery;
-
   return cleaned;
 }
 
-/**
- * Construye success_url final añadiendo session_id.
- * Nota: si el success URL contiene "#/ruta", la query va ANTES del #.
- * Stripe suele aceptar ambos, pero esto lo deja correcto:
- * https://dominio/path?session_id=...#/ruta
- */
 function buildSuccessUrlWithSessionId(successBase) {
   const base = sanitizeBaseUrl(successBase);
-
-  // Si hay hash, la query debe ir antes del hash
   const [beforeHash, afterHash] = base.split('#');
-
   const withQuery = `${beforeHash}?session_id={CHECKOUT_SESSION_ID}`;
-
-  // Si había hash, lo reponemos
   return afterHash !== undefined ? `${withQuery}#${afterHash}` : withQuery;
 }
 
 /**
- * Función auxiliar para obtener o crear el Tax Rate de Retención del -7%
+ * Función para obtener o crear la retención del -7%
  */
 async function getOrCreateRetencionTaxRate() {
   try {
-    const taxRates = await stripe.taxRates.list({ active: true });
-    // Buscamos si ya existe uno con -7%
-    const existing = taxRates.data.find(tr => tr.percentage === -7 && tr.display_name === 'Retención IRPF');
+    const taxRates = await stripe.taxRates.list({ active: true, limit: 100 });
+    // Buscamos cualquier impuesto que sea exactamente -7
+    const existing = taxRates.data.find(tr => tr.percentage === -7);
     
     if (existing) return existing.id;
 
-    // Si no existe, lo creamos (eliminado parámetro 'direction' que fallaba)
+    // Si no existe, lo creamos forzando los parámetros para Retención Española
     const newTaxRate = await stripe.taxRates.create({
       display_name: 'Retención IRPF',
-      description: 'Retención 7%',
+      description: 'Retención 7% (IRPF)',
       percentage: -7,
-      inclusive: false,
+      inclusive: false, // Importante: False para que reste de la base
+      jurisdiction: 'ES',
+      tax_type: 'pension_fund_contribution' // Usamos un tipo que Stripe asocia a deducciones si el genérico falla
     });
     return newTaxRate.id;
   } catch (error) {
-    console.error('[getOrCreateRetencionTaxRate] Error:', error.message);
-    // Si falla, devolvemos null para intentar que la sesión se cree al menos con IVA
+    console.error('[getOrCreateRetencionTaxRate] Error crítico:', error.message);
     return null;
   }
 }
@@ -100,19 +78,16 @@ async function createCheckoutSessionHandler(req, res) {
     const successUrlFinal = buildSuccessUrlWithSessionId(successEnv);
     const cancelUrlFinal = sanitizeBaseUrl(cancelEnv);
 
-    // Intentamos obtener la retención
+    // Intentamos obtener el ID de la retención
     const RETENCION_ID = await getOrCreateRetencionTaxRate();
 
-    // Preparamos los tax_rates (solo añadimos los que no sean null)
     const activeTaxRates = [IVA_ID];
     if (RETENCION_ID) {
       activeTaxRates.push(RETENCION_ID);
     }
 
-    // LOGS para verificar en Render
-    console.log('[checkout] Aplicando Tax Rates:', activeTaxRates);
+    console.log('[checkout] IDs de impuestos aplicados:', activeTaxRates);
 
-    // Email opcional
     const email = String(req.body?.email || '').trim().toLowerCase();
 
     const session = await stripe.checkout.sessions.create({
@@ -122,18 +97,13 @@ async function createCheckoutSessionHandler(req, res) {
         quantity: 1,
         tax_rates: activeTaxRates
       }],
-
       customer_email: email || undefined,
-
       invoice_creation: {
         enabled: true,
       },
-
       success_url: successUrlFinal,
       cancel_url: cancelUrlFinal,
-
       allow_promotion_codes: true,
-
       metadata: {
         product: 'tuappgo-licencia-anual',
       },
