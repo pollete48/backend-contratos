@@ -4,9 +4,10 @@
 // Requisitos ENV:
 // - STRIPE_SECRET_KEY
 // - STRIPE_PRICE_ID
-// - STRIPE_IVA_ID       (El ID txr_... que creaste del 21%)
-// - CHECKOUT_SUCCESS_URL    (ej: https://tuappgo.com/contratos/#/pago-ok)
-// - CHECKOUT_CANCEL_URL      (ej: https://tuappgo.com/contratos/#/pago-cancelado)
+// - STRIPE_IVA_ID
+// - RETENCION_PORCENTAJE (ej: -7)
+// - CHECKOUT_SUCCESS_URL
+// - CHECKOUT_CANCEL_URL
 //
 // Ruta sugerida:
 //    app.post('/api/stripe/checkout', createCheckoutSessionHandler);
@@ -42,28 +43,30 @@ function buildSuccessUrlWithSessionId(successBase) {
 }
 
 /**
- * Función para obtener o crear la retención del -7%
+ * Obtiene o crea el Tax Rate basado en la variable de entorno
  */
-async function getOrCreateRetencionTaxRate() {
+async function getOrCreateRetencionTaxRate(valorPorcentaje) {
   try {
+    const numPorcentaje = parseFloat(valorPorcentaje);
+    if (isNaN(numPorcentaje)) return null;
+
     const taxRates = await stripe.taxRates.list({ active: true, limit: 100 });
-    // Buscamos cualquier impuesto que sea exactamente -7
-    const existing = taxRates.data.find(tr => tr.percentage === -7);
+    // Buscamos si existe un impuesto con ese porcentaje exacto y nombre de retención
+    const existing = taxRates.data.find(tr => tr.percentage === numPorcentaje && tr.display_name.includes('Retención'));
     
     if (existing) return existing.id;
 
-    // Si no existe, lo creamos forzando los parámetros para Retención Española
+    // Si no existe, lo creamos dinámicamente
     const newTaxRate = await stripe.taxRates.create({
       display_name: 'Retención IRPF',
-      description: 'Retención 7% (IRPF)',
-      percentage: -7,
-      inclusive: false, // Importante: False para que reste de la base
+      description: `Retención ${Math.abs(numPorcentaje)}% (aplicada automáticamente)`,
+      percentage: numPorcentaje,
+      inclusive: false,
       jurisdiction: 'ES',
-      tax_type: 'pension_fund_contribution' // Usamos un tipo que Stripe asocia a deducciones si el genérico falla
     });
     return newTaxRate.id;
   } catch (error) {
-    console.error('[getOrCreateRetencionTaxRate] Error crítico:', error.message);
+    console.error('[getOrCreateRetencionTaxRate] Error:', error.message);
     return null;
   }
 }
@@ -72,21 +75,26 @@ async function createCheckoutSessionHandler(req, res) {
   try {
     const PRICE_ID = requireEnv('STRIPE_PRICE_ID');
     const IVA_ID = requireEnv('STRIPE_IVA_ID');
+    const PORCENTAJE_RET = process.env.RETENCION_PORCENTAJE; // No usamos requireEnv para que sea opcional
+    
     const successEnv = requireEnv('CHECKOUT_SUCCESS_URL');
     const cancelEnv = requireEnv('CHECKOUT_CANCEL_URL');
 
     const successUrlFinal = buildSuccessUrlWithSessionId(successEnv);
     const cancelUrlFinal = sanitizeBaseUrl(cancelEnv);
 
-    // Intentamos obtener el ID de la retención
-    const RETENCION_ID = await getOrCreateRetencionTaxRate();
-
+    // Lista de impuestos a aplicar
     const activeTaxRates = [IVA_ID];
-    if (RETENCION_ID) {
-      activeTaxRates.push(RETENCION_ID);
+
+    // Si existe la variable de retención, buscamos o creamos el ID
+    if (PORCENTAJE_RET) {
+      const RETENCION_ID = await getOrCreateRetencionTaxRate(PORCENTAJE_RET);
+      if (RETENCION_ID) {
+        activeTaxRates.push(RETENCION_ID);
+      }
     }
 
-    console.log('[checkout] IDs de impuestos aplicados:', activeTaxRates);
+    console.log('[checkout] Impuestos finales a aplicar:', activeTaxRates);
 
     const email = String(req.body?.email || '').trim().toLowerCase();
 
