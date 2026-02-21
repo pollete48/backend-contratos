@@ -10,14 +10,8 @@ function safeTrim(v) {
   return String(v || '').trim();
 }
 
-function getPriceEurFromEnv() {
-  // Ahora el precio oficial incluye el total con IVA y Retención (148,20)
-  const p = Number(process.env.PRICE_EUR || 0);
-  return Number.isFinite(p) && p > 0 ? p : 0;
-}
-
 /**
- * Función auxiliar para obtener la Base Imponible desde Render
+ * Obtiene el precio base desde Render
  */
 function getBaseImponibleFromEnv() {
   const b = Number(process.env.PRECIO_BASE || 130.00);
@@ -25,9 +19,7 @@ function getBaseImponibleFromEnv() {
 }
 
 /**
- * Genera el Bloque HTML de la factura desglosada (Usado para previsualización o emails)
- * Mejora 1: Logo 105px
- * Mejora 2: Orden descendente (Base, IVA, Ret, Total)
+ * Genera el Bloque HTML de la factura desglosada
  */
 function buildManualInvoiceHtml(invoiceData) {
   const emisor = {
@@ -36,6 +28,15 @@ function buildManualInvoiceHtml(invoiceData) {
     dir: process.env.EMPRESA_DIRECCION || '',
     tel: process.env.EMPRESA_TELEFONO || ''
   };
+
+  const receptorHtml = invoiceData.nifFactura ? `
+    <div style="margin-top:20px; font-size:12px; color:#555; text-align:left;">
+      <strong>RECEPTOR:</strong><br>
+      ${invoiceData.nombreFactura || ''}<br>
+      NIF: ${invoiceData.nifFactura}<br>
+      ${invoiceData.direccionFactura || ''}
+    </div>
+  ` : '';
 
   return `
     <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px; color:#333; max-width: 500px;">
@@ -50,6 +51,8 @@ function buildManualInvoiceHtml(invoiceData) {
         </tr>
       </table>
       
+      ${receptorHtml}
+
       <div style="margin-top:20px;">
         <h3 style="margin-bottom:5px; color:#1a1a1a;">FACTURA: ${invoiceData.numero || 'PROVISIONAL'}</h3>
         <p style="font-size:13px; margin-top:0;">Fecha: ${invoiceData.fecha}</p>
@@ -82,10 +85,16 @@ async function createManualOrderHandler(req, res) {
     const db = req.app?.locals?.db;
     if (!db) return res.status(503).json({ ok: false, code: 'FIRESTORE_NOT_READY' });
 
-    const metodo = safeTrim(req.body?.metodo).toLowerCase(); // 'bizum' | 'transferencia'
+    const metodo = safeTrim(req.body?.metodo).toLowerCase();
     const email = safeTrim(req.body?.email);
     const uuid = safeTrim(req.body?.uuid);
     const producto = safeTrim(req.body?.producto || 'contratos');
+    
+    // Captura de nuevos campos fiscales
+    const tipoCliente = safeTrim(req.body?.tipoCliente || 'particular');
+    const nombreFactura = safeTrim(req.body?.nombreFactura);
+    const nifFactura = safeTrim(req.body?.nifFactura);
+    const direccionFactura = safeTrim(req.body?.direccionFactura);
 
     if (!['bizum', 'transferencia'].includes(metodo)) {
       return res.status(400).json({ ok: false, code: 'INVALID_METHOD' });
@@ -94,9 +103,14 @@ async function createManualOrderHandler(req, res) {
       return res.status(400).json({ ok: false, code: 'INVALID_EMAIL' });
     }
 
-    // ✅ IMPORTE OFICIAL (Debe ser 148,20 en Render)
-    const envPrice = getPriceEurFromEnv();
-    const amount = envPrice > 0 ? envPrice : 0;
+    const baseVal = getBaseImponibleFromEnv();
+    const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
+    const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
+
+    // Lógica de importe dinámico
+    const ivaVal = baseVal * (ivaPerc / 100);
+    const retVal = tipoCliente === 'profesional' ? (baseVal * (retPerc / 100)) : 0;
+    const amount = parseFloat((baseVal + ivaVal - retVal).toFixed(2));
 
     const prefix = metodo === 'bizum' ? 'TUAPP-BIZ' : 'TUAPP-TRF';
     const referencia = genReferencia(prefix);
@@ -106,22 +120,7 @@ async function createManualOrderHandler(req, res) {
     const bankHolder = safeTrim(process.env.BANK_HOLDER);
     const bankConceptHint = safeTrim(process.env.BANK_CONCEPT_HINT);
 
-    if (metodo === 'bizum' && !bizumPhone) {
-      return res.status(500).json({ ok: false, code: 'BIZUM_PHONE_NOT_SET' });
-    }
-    if (metodo === 'transferencia' && !bankIban) {
-      return res.status(500).json({ ok: false, code: 'BANK_IBAN_NOT_SET' });
-    }
-    if (amount <= 0) {
-      return res.status(500).json({ ok: false, code: 'PRICE_EUR_NOT_SET' });
-    }
-
     const now = admin.firestore.FieldValue.serverTimestamp();
-
-    // ✅ Usamos la variable PRECIO_BASE para el desglose
-    const baseVal = getBaseImponibleFromEnv();
-    const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
-    const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
 
     const doc = {
       metodo,
@@ -134,10 +133,13 @@ async function createManualOrderHandler(req, res) {
       status: 'pending',
       createdAt: now,
       updatedAt: now,
-      // Guardamos valores dinámicos basados en PRECIO_BASE
       baseImponible: baseVal,
-      ivaPerc: ivaPerc,
-      retPerc: retPerc
+      ivaPerc,
+      retPerc,
+      tipoCliente,
+      nombreFactura,
+      nifFactura,
+      direccionFactura
     };
 
     const ref = await db.collection('manual_orders').add(doc);
