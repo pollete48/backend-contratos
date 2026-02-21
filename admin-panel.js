@@ -172,6 +172,7 @@ async function listInvoices(req, res) {
     if (!db) return res.status(503).json({ ok: false, code: 'FIRESTORE_NOT_READY' });
     const snap = await db.collection('invoices').orderBy('date', 'desc').limit(500).get();
     const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // IMPORTANTE: Devolvemos el mismo formato que los pedidos manuales
     return res.json({ ok: true, items });
   } catch (err) {
     console.error('❌ listInvoices', err);
@@ -416,20 +417,20 @@ function adminHtmlPage() {
           <td>\${i.invoiceNumber || '—'}</td>
           <td>\${fechaStr}</td>
           <td>\${i.email || '—'}</td>
-          <td>\${(i.base || 0).toFixed(2).replace('.', ',')}</td>
-          <td>\${(i.iva || 0).toFixed(2).replace('.', ',')}</td>
-          <td>-\${(i.ret || 0).toFixed(2).replace('.', ',')}</td>
-          <td style="color:#22c55e; font-weight:bold;">\${(i.total || 0).toFixed(2).replace('.', ',')}</td>
+          <td>\${(i.base || 0).toFixed(2)}</td>
+          <td>\${(i.iva || 0).toFixed(2)}</td>
+          <td>-\${(i.ret || 0).toFixed(2)}</td>
+          <td style="color:#22c55e; font-weight:bold;">\${(i.total || 0).toFixed(2)}</td>
           <td><span style="text-transform:uppercase; font-size:10px;" class="pill">\${i.method || 'manual'}</span></td>
         </tr>\`;
       }).join('');
 
       foot.innerHTML = \`<tr>
         <td colspan="3">TOTALES DEL PERÍODO</td>
-        <td>\${totals.base.toFixed(2).replace('.', ',')}€</td>
-        <td>\${totals.iva.toFixed(2).replace('.', ',')}€</td>
-        <td>-\${totals.ret.toFixed(2).replace('.', ',')}€</td>
-        <td style="color:#22c55e;">\${totals.total.toFixed(2).replace('.', ',')}€</td>
+        <td>\${totals.base.toFixed(2)}€</td>
+        <td>\${totals.iva.toFixed(2)}€</td>
+        <td>-\${totals.ret.toFixed(2)}€</td>
+        <td style="color:#22c55e;">\${totals.total.toFixed(2)}€</td>
         <td></td>
       </tr>\`;
       window.lastInvoices = j.items;
@@ -458,6 +459,7 @@ function adminHtmlPage() {
     link.click();
   }
 
+  // Carga inicial
   loadOrders();
 </script>
 </body>
