@@ -53,6 +53,16 @@ function buildInvoiceHtml(invoiceData) {
     email: process.env.EMPRESA_EMAIL || ''
   };
 
+  // Sección del receptor solo si hay datos (Factura Completa vs Simplificada)
+  const receptorHtml = invoiceData.nifFactura ? `
+    <div style="margin-top:20px; font-size:12px; color:#555; text-align:left;">
+      <strong>RECEPTOR:</strong><br>
+      ${invoiceData.nombreFactura || ''}<br>
+      NIF: ${invoiceData.nifFactura}<br>
+      ${invoiceData.direccionFactura || ''}
+    </div>
+  ` : '';
+
   return `
     <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px; color:#333; max-width: 550px;">
       <table style="width:100%;">
@@ -69,6 +79,9 @@ function buildInvoiceHtml(invoiceData) {
           </td>
         </tr>
       </table>
+      
+      ${receptorHtml}
+
       <div style="margin-top:20px;">
         <h3 style="margin-bottom:5px; color:#1a1a1a;">FACTURA: ${invoiceData.numero}</h3>
         <p style="font-size:13px; margin-top:0;">Fecha: ${invoiceData.fecha}</p>
@@ -170,7 +183,23 @@ async function listInvoices(req, res) {
   try {
     const db = req.app?.locals?.db;
     if (!db) return res.status(503).json({ ok: false, code: 'FIRESTORE_NOT_READY' });
-    const snap = await db.collection('invoices').orderBy('date', 'desc').limit(500).get();
+
+    let q = db.collection('invoices').orderBy('date', 'desc');
+
+    // Filtrado por fechas
+    const { startDate, endDate } = req.query;
+    if (startDate) {
+      const start = new Date(startDate);
+      start.setHours(0, 0, 0, 0);
+      q = q.where('date', '>=', admin.firestore.Timestamp.fromDate(start));
+    }
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      q = q.where('date', '<=', admin.firestore.Timestamp.fromDate(end));
+    }
+
+    const snap = await q.limit(1000).get();
     const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     return res.json({ ok: true, items });
   } catch (err) {
@@ -223,10 +252,13 @@ async function completeManualOrder(req, res) {
     const numFactura = await getNextInvoiceNumber(db);
     const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
     const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
-    const totalVal = getPriceEur();
+    
+    // Si es profesional, el total es el precio con descuento. Si no, es precio base+iva.
+    // Usamos el total que viene del pedido (order.amount) o recalculamos.
+    const totalVal = order.amount || getPriceEur();
     const baseVal = getBaseImponible();
     const ivaVal = parseFloat((baseVal * (ivaPerc / 100)).toFixed(2));
-    const retVal = parseFloat((baseVal * (retPerc / 100)).toFixed(2));
+    const retVal = order.tipoCliente === 'profesional' ? parseFloat((baseVal * (retPerc / 100)).toFixed(2)) : 0;
 
     const invoiceData = {
       numero: numFactura,
@@ -235,7 +267,10 @@ async function completeManualOrder(req, res) {
       iva: ivaVal.toFixed(2).replace('.', ','),
       ret: retVal.toFixed(2).replace('.', ','),
       total: totalVal.toFixed(2).replace('.', ','),
-      ivaPerc, retPerc
+      ivaPerc, retPerc,
+      nombreFactura: order.nombreFactura || '',
+      nifFactura: order.nifFactura || '',
+      direccionFactura: order.direccionFactura || ''
     };
 
     await db.collection('invoices').doc(numFactura.replace('/', '-')).set({
@@ -247,7 +282,11 @@ async function completeManualOrder(req, res) {
       ret: retVal,
       total: totalVal,
       method: order.metodo || 'manual',
-      orderId: id
+      orderId: id,
+      tipoCliente: order.tipoCliente || 'particular',
+      nombreFactura: order.nombreFactura || '',
+      nifFactura: order.nifFactura || '',
+      direccionFactura: order.direccionFactura || ''
     });
 
     const mail = buildPurchaseEmail({ code, expiresAt: expiresAtDate, invoiceData });
@@ -290,21 +329,26 @@ function adminHtmlPage() {
     .nav-tabs{display:flex; gap:10px; margin: 20px 18px 10px 18px;}
     .tab{padding:10px 20px; cursor:pointer; border-radius:10px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1); transition: 0.2s;}
     .tab.active{background:#2a6edb; border-color:#2a6edb; box-shadow: 0 4px 12px rgba(42, 110, 219, 0.2);}
-    main{max-width:1100px; margin:0 auto; padding:18px; min-height: 80vh;}
+    main{max-width:1200px; margin:0 auto; padding:18px; min-height: 80vh;}
     .card{background:#0f1b33; border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:14px; margin-bottom:12px;}
     .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
-    input,select{background:#0b1220; color:#e8eefc; border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:10px 12px;}
-    button{border:0; border-radius:12px; padding:10px 12px; cursor:pointer; font-weight:700;}
+    input,select{background:#0b1220; color:#e8eefc; border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:10px 12px; font-size:13px;}
+    button{border:0; border-radius:12px; padding:10px 12px; cursor:pointer; font-weight:700; transition:0.2s;}
+    button:active{transform:scale(0.96);}
     .btn{background:#2a6edb; color:white;}
     .btn2{background:#22c55e; color:#07121e;}
     .btn-csv{background:#f59e0b; color:#07121e;}
+    .btn-outline{background:transparent; border:1px solid #2a6edb; color:#2a6edb;}
     .scroll-area{overflow-x:auto; width:100%; border-radius: 8px;}
-    table{width:100%; border-collapse:collapse; margin-top:10px; min-width: 600px;}
+    table{width:100%; border-collapse:collapse; margin-top:10px; min-width: 900px;}
     th,td{padding:12px; border-bottom:1px solid rgba(255,255,255,.08); font-size:13px; text-align:left;}
     th{background:rgba(255,255,255,.03); color: #94a3b8; font-weight: 600;}
     tfoot{font-weight:bold; background:rgba(255,255,255,.05); color: #fff;}
     .hidden{display:none;}
     .pill{padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,0.1); font-size: 11px;}
+    .pill-pro{background: rgba(34, 197, 94, 0.2); color: #22c55e;}
+    .filter-group{display:flex; gap:8px; align-items:center; background:rgba(255,255,255,0.02); padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,0.05);}
+    .filter-label{font-size:12px; color:#94a3b8; margin-right:4px;}
   </style>
 </head>
 <body>
@@ -330,7 +374,7 @@ function adminHtmlPage() {
     <div class="card">
       <div class="scroll-area">
         <table id="table-orders">
-          <thead><tr><th>Fecha</th><th>Método</th><th>Email</th><th>Referencia</th><th>Acción</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Método</th><th>Email</th><th>NIF/Empresa</th><th>Referencia</th><th>Acción</th></tr></thead>
           <tbody id="rows-orders"></tbody>
         </table>
       </div>
@@ -339,14 +383,35 @@ function adminHtmlPage() {
 
   <div id="view-invoices" class="hidden">
     <div class="card row">
-      <button class="btn" onclick="loadInvoices()">Actualizar Libro</button>
+      <div class="filter-group">
+        <span class="filter-label">Período:</span>
+        <input type="date" id="date-start">
+        <input type="date" id="date-end">
+      </div>
+      <div class="filter-group">
+        <button class="btn-outline" onclick="setQuarter(1)">Q1</button>
+        <button class="btn-outline" onclick="setQuarter(2)">Q2</button>
+        <button class="btn-outline" onclick="setQuarter(3)">Q3</button>
+        <button class="btn-outline" onclick="setQuarter(4)">Q4</button>
+      </div>
+      <button class="btn" onclick="loadInvoices()">Filtrar Libro</button>
       <button class="btn-csv" onclick="exportCSV()">Exportar CSV (Hacienda)</button>
     </div>
+
     <div class="card">
       <div class="scroll-area">
         <table id="table-invoices">
           <thead>
-            <tr><th>Factura</th><th>Fecha</th><th>Email</th><th>Base (€)</th><th>IVA (€)</th><th>Ret (€)</th><th>Total (€)</th><th>Método</th></tr>
+            <tr>
+              <th>Factura</th>
+              <th>Fecha</th>
+              <th>NIF / Empresa</th>
+              <th>Base (€)</th>
+              <th>IVA (€)</th>
+              <th>Ret (€)</th>
+              <th>Total (€)</th>
+              <th>Método</th>
+            </tr>
           </thead>
           <tbody id="rows-invoices"></tbody>
           <tfoot id="foot-invoices"></tfoot>
@@ -370,9 +435,21 @@ function adminHtmlPage() {
     document.getElementById('tab-orders').classList.toggle('active', t==='orders');
     document.getElementById('tab-invoices').classList.toggle('active', t==='invoices');
     if(t==='invoices') {
-        // En lugar de cargar automático, tratamos el click como ejecución
         loadInvoices();
     }
+  }
+
+  function setQuarter(q) {
+    const year = new Date().getFullYear();
+    const quarters = {
+      1: { s: '-01-01', e: '-03-31' },
+      2: { s: '-04-01', e: '-06-30' },
+      3: { s: '-07-01', e: '-09-30' },
+      4: { s: '-10-01', e: '-12-31' }
+    };
+    document.getElementById('date-start').value = year + quarters[q].s;
+    document.getElementById('date-end').value = year + quarters[q].e;
+    loadInvoices();
   }
 
   async function api(path, opts={}){
@@ -380,10 +457,9 @@ function adminHtmlPage() {
     const headers = Object.assign({'x-admin-key': key}, opts.headers || {});
     const r = await fetch(path, Object.assign({}, opts, {headers}));
     
-    // Si la respuesta no es JSON, capturamos el error antes de romper
     const contentType = r.headers.get("content-type");
     if (!contentType || !contentType.includes("application/json")) {
-        throw new Error("El servidor respondió con un error (404/500). Verifica la ruta en server.js.");
+        throw new Error("Error en servidor. Verifica conexión.");
     }
     
     const j = await r.json();
@@ -393,31 +469,44 @@ function adminHtmlPage() {
 
   async function loadOrders(){
     const rows = document.getElementById('rows-orders');
-    rows.innerHTML = '<tr><td colspan="5">Ejecutando orden de carga...</td></tr>';
+    rows.innerHTML = '<tr><td colspan="6">Cargando...</td></tr>';
     try {
       const j = await api('/api/admin/manual-orders?status=' + document.getElementById('status').value);
       if(!j.items || j.items.length === 0) {
-        rows.innerHTML = '<tr><td colspan="5">No hay pedidos registrados.</td></tr>';
+        rows.innerHTML = '<tr><td colspan="6">No hay pedidos registrados.</td></tr>';
         return;
       }
       rows.innerHTML = j.items.map(o => \`<tr>
         <td>\${new Date(o.createdAt._seconds*1000).toLocaleString()}</td>
         <td>\${o.metodo || '—'}</td>
         <td>\${o.email}</td>
+        <td>
+          <div style="font-size:11px;">\${o.nifFactura || '—'}</div>
+          <div style="font-weight:bold; font-size:10px;">\${o.nombreFactura || ''}</div>
+        </td>
         <td>\${o.referencia || '—'}</td>
         <td>\${o.status==='pending' ? '<button class="btn2" onclick="complete(\\''+o.id+'\\')">Confirmar</button>':''}</td>
       </tr>\`).join('');
-    } catch(e){ rows.innerHTML = '<tr><td colspan="5" style="color:red;">Error de ejecución: '+e.message+'</td></tr>'; }
+    } catch(e){ rows.innerHTML = '<tr><td colspan="6" style="color:red;">Error: '+e.message+'</td></tr>'; }
   }
 
   async function loadInvoices(){
     const rows = document.getElementById('rows-invoices');
     const foot = document.getElementById('foot-invoices');
-    rows.innerHTML = '<tr><td colspan="8">Ejecutando orden: Recuperando facturas...</td></tr>';
+    const start = document.getElementById('date-start').value;
+    const end = document.getElementById('date-end').value;
+
+    rows.innerHTML = '<tr><td colspan="8">Filtrando facturas...</td></tr>';
+    
+    let url = '/api/admin/invoices';
+    if(start || end) {
+      url += \`?startDate=\${start}&endDate=\${end}\`;
+    }
+
     try {
-      const j = await api('/api/admin/invoices');
+      const j = await api(url);
       if(!j.items || j.items.length === 0) {
-        rows.innerHTML = '<tr><td colspan="8">El libro de facturas está vacío en este momento.</td></tr>';
+        rows.innerHTML = '<tr><td colspan="8">No hay facturas en este período.</td></tr>';
         foot.innerHTML = '';
         return;
       }
@@ -428,15 +517,20 @@ function adminHtmlPage() {
         totals.ret += i.ret || 0;
         totals.total += i.total || 0;
         const fechaStr = i.date && i.date._seconds ? new Date(i.date._seconds*1000).toLocaleDateString() : '—';
+        const isPro = i.tipoCliente === 'profesional';
+
         return \`<tr>
           <td>\${i.invoiceNumber || '—'}</td>
           <td>\${fechaStr}</td>
-          <td>\${i.email || '—'}</td>
+          <td>
+            <div style="font-weight:bold;">\${i.nifFactura || 'Particular'}</div>
+            <div style="font-size:10px; opacity:0.7;">\${i.nombreFactura || i.email || ''}</div>
+          </td>
           <td>\${(i.base || 0).toFixed(2).replace('.', ',')}€</td>
           <td>\${(i.iva || 0).toFixed(2).replace('.', ',')}€</td>
-          <td>-\${(i.ret || 0).toFixed(2).replace('.', ',')}€</td>
+          <td style="color:\${isPro ? '#f87171' : '#94a3b8'};">-\${(i.ret || 0).toFixed(2).replace('.', ',')}€</td>
           <td style="color:#22c55e; font-weight:bold;">\${(i.total || 0).toFixed(2).replace('.', ',')}€</td>
-          <td><span class="pill">\${i.method || 'manual'}</span></td>
+          <td><span class="pill \${isPro ? 'pill-pro' : ''}">\${i.method || 'manual'} \${isPro ? 'PRO' : ''}</span></td>
         </tr>\`;
       }).join('');
 
@@ -444,16 +538,16 @@ function adminHtmlPage() {
         <td colspan="3">TOTALES DEL PERÍODO</td>
         <td>\${totals.base.toFixed(2).replace('.', ',')}€</td>
         <td>\${totals.iva.toFixed(2).replace('.', ',')}€</td>
-        <td>-\${totals.ret.toFixed(2).replace('.', ',')}€</td>
+        <td style="color:#f87171;">-\${totals.ret.toFixed(2).replace('.', ',')}€</td>
         <td style="color:#22c55e;">\${totals.total.toFixed(2).replace('.', ',')}€</td>
         <td></td>
       </tr>\`;
       window.lastInvoices = j.items;
-    } catch(e){ rows.innerHTML = '<tr><td colspan="8" style="color:red;">Fallo en la orden: '+e.message+'</td></tr>'; }
+    } catch(e){ rows.innerHTML = '<tr><td colspan="8" style="color:red;">Error: '+e.message+'</td></tr>'; }
   }
 
   async function complete(id){
-    if(!confirm('¿Ejecutar orden: Confirmar pago y emitir factura?')) return;
+    if(!confirm('¿Confirmar pago y emitir factura?')) return;
     try {
       await api('/api/admin/manual-orders/' + id + '/complete', {method:'POST'});
       loadOrders();
@@ -461,20 +555,23 @@ function adminHtmlPage() {
   }
 
   function exportCSV(){
-    if(!window.lastInvoices || window.lastInvoices.length === 0) { alert('No hay datos para exportar'); return; }
-    let csv = "Factura;Fecha;Email;Base;IVA;Retencion;Total;Metodo\\n";
+    if(!window.lastInvoices || window.lastInvoices.length === 0) { alert('No hay datos'); return; }
+    
+    // Encabezado completo para Hacienda
+    let csv = "Factura;Fecha;NIF;Nombre/Empresa;Base;IVA;Retencion;Total;Metodo;Tipo\\n";
+    
     window.lastInvoices.forEach(i => {
       const f = i.date && i.date._seconds ? new Date(i.date._seconds*1000).toLocaleDateString() : '';
-      csv += \`\${i.invoiceNumber || ''};\${f};\${i.email || ''};\${(i.base || 0).toFixed(2)};\${(i.iva || 0).toFixed(2)};\${(i.ret || 0).toFixed(2)};\${(i.total || 0).toFixed(2)};\${i.method || 'manual'}\\n\`;
+      csv += \`\${i.invoiceNumber || ''};\${f};\${i.nifFactura || ''};\${i.nombreFactura || i.email || ''};\${(i.base || 0).toFixed(2)};\${(i.iva || 0).toFixed(2)};\${(i.ret || 0).toFixed(2)};\${(i.total || 0).toFixed(2)};\${i.method || ''};\${i.tipoCliente || ''}\\n\`;
     });
-    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    
+    const blob = new Blob(["\\ufeff" + csv], {type:'text/csv;charset=utf-8;'});
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = "libro_facturas_tuappgo.csv";
+    link.download = "libro_facturas_tuappgo_" + new Date().toISOString().split('T')[0] + ".csv";
     link.click();
   }
 
-  // Carga inicial de la orden de pedidos
   loadOrders();
 </script>
 </body>
