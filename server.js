@@ -81,7 +81,7 @@ app.options('*', cors());
 function initFirebaseAdmin() {
   if (admin.apps.length) return;
   
-  // Intento 1: Variable de entorno JSON (la que acabamos de configurar)
+  // Intento 1: Variable de entorno JSON
   const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
   if (json) {
     try {
@@ -94,7 +94,7 @@ function initFirebaseAdmin() {
     }
   }
 
-  // Intento 2: Ruta de archivo (compatible con tu configuración antigua)
+  // Intento 2: Ruta de archivo
   const saPathRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (saPathRaw) {
     const saPath = path.isAbsolute(saPathRaw) ? saPathRaw : path.join(process.cwd(), saPathRaw);
@@ -138,20 +138,35 @@ function main() {
   // --- RUTAS DE PAGO (Sincronizadas con la App) ---
   app.post('/api/stripe/checkout', createCheckoutSessionHandler);
   
-  // Aceptamos ambos nombres de ruta para no romper la App
   app.post('/api/pago/manual/crear', manualPayment.createManualOrderHandler);
   app.post('/api/manual-order', manualPayment.createManualOrderHandler);
 
+  // Lógica de precio dinámica según tipo de cliente
   app.get('/api/precio', (req, res) => {
-    const p = Number(process.env.PRICE_EUR || 0);
-    res.json({ ok: true, priceEur: Number.isFinite(p) ? p : 0, currency: 'EUR' });
+    const basePrice = Number(process.env.PRICE_EUR || 130);
+    const tipo = req.query.tipo; // 'particular' o 'profesional'
+    
+    // IVA es siempre 21%
+    const iva = basePrice * 0.21;
+    let total = basePrice + iva;
+
+    // Si es profesional, restamos el 7% de IRPF sobre la base
+    if (tipo === 'profesional') {
+      const irpf = basePrice * 0.07;
+      total = (basePrice + iva) - irpf;
+    }
+
+    res.json({ 
+      ok: true, 
+      priceEur: Number(total.toFixed(2)), 
+      currency: 'EUR' 
+    });
   });
 
-  // --- RUTAS DE LICENCIA (Lógica recuperada de index.js) ---
+  // --- RUTAS DE LICENCIA ---
   app.post('/api/licencia/activar', activateLicenseHandler);
   app.post('/api/licencia/recuperar', recoverLicenseHandler);
   
-  // Validación online desde la App (Copiado íntegro de index.js)
   app.post('/api/licencia/validar', async (req, res) => {
     try {
       const codigo = normalizarCodigo(req.body?.codigo);
@@ -208,7 +223,7 @@ function main() {
     }
   });
 
-  // --- GENERACIÓN DE PDF (Recuperado de index.js) ---
+  // --- GENERACIÓN DE PDF ---
   app.post('/generar-pdf', upload.single('file'), async (req, res) => {
     try {
       const file = req.file;
@@ -243,8 +258,10 @@ function main() {
     res.status(500).json({ ok: false, code: 'SERVER_ERROR' });
   });
 
-  // VALIDACIÓN DE VARIABLES CRÍTICAS
+  // VALIDACIÓN DE VARIABLES CRÍTICAS (Añadidas las nuevas Price IDs)
   requireEnv('STRIPE_SECRET_KEY');
+  requireEnv('STRIPE_PRICE_ID_PARTICULAR');
+  requireEnv('STRIPE_PRICE_ID_PROFESIONAL');
   requireEnv('ADMIN_KEY');
 
   const port = Number(process.env.PORT || 3000);
