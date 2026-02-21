@@ -283,7 +283,7 @@ function adminHtmlPage() {
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>TuAppGo Admin</title>
+  <title>TuAppGo PRUEBA REAL</title>
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; margin:0; background:#0b1220; color:#e8eefc; overflow-x:hidden;}
     header{padding:18px 20px; background:#0f1b33; border-bottom:1px solid rgba(255,255,255,.08); display:flex; justify-content:space-between; align-items:center; position:sticky; top:0; z-index:100;}
