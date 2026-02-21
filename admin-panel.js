@@ -172,7 +172,6 @@ async function listInvoices(req, res) {
     if (!db) return res.status(503).json({ ok: false, code: 'FIRESTORE_NOT_READY' });
     const snap = await db.collection('invoices').orderBy('date', 'desc').limit(500).get();
     const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    // IMPORTANTE: Devolvemos el mismo formato que los pedidos manuales
     return res.json({ ok: true, items });
   } catch (err) {
     console.error('❌ listInvoices', err);
@@ -286,12 +285,12 @@ function adminHtmlPage() {
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>TuAppGo Admin</title>
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; margin:0; background:#0b1220; color:#e8eefc;}
-    header{padding:18px 20px; background:#0f1b33; border-bottom:1px solid rgba(255,255,255,.08); display:flex; justify-content:space-between; align-items:center;}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; margin:0; background:#0b1220; color:#e8eefc; overflow-x:hidden;}
+    header{padding:18px 20px; background:#0f1b33; border-bottom:1px solid rgba(255,255,255,.08); display:flex; justify-content:space-between; align-items:center; position:sticky; top:0; z-index:100;}
     .nav-tabs{display:flex; gap:10px; margin: 20px 18px 10px 18px;}
-    .tab{padding:10px 20px; cursor:pointer; border-radius:10px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1);}
-    .tab.active{background:#2a6edb; border-color:#2a6edb;}
-    main{max-width:1100px; margin:0 auto; padding:18px;}
+    .tab{padding:10px 20px; cursor:pointer; border-radius:10px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1); transition: 0.2s;}
+    .tab.active{background:#2a6edb; border-color:#2a6edb; box-shadow: 0 4px 12px rgba(42, 110, 219, 0.2);}
+    main{max-width:1100px; margin:0 auto; padding:18px; min-height: 80vh;}
     .card{background:#0f1b33; border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:14px; margin-bottom:12px;}
     .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
     input,select{background:#0b1220; color:#e8eefc; border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:10px 12px;}
@@ -299,11 +298,13 @@ function adminHtmlPage() {
     .btn{background:#2a6edb; color:white;}
     .btn2{background:#22c55e; color:#07121e;}
     .btn-csv{background:#f59e0b; color:#07121e;}
-    table{width:100%; border-collapse:collapse; margin-top:10px;}
-    th,td{padding:10px; border-bottom:1px solid rgba(255,255,255,.08); font-size:13px; text-align:left;}
-    th{background:rgba(255,255,255,.03);}
-    tfoot{font-weight:bold; background:rgba(255,255,255,.05);}
+    .scroll-area{overflow-x:auto; width:100%; border-radius: 8px;}
+    table{width:100%; border-collapse:collapse; margin-top:10px; min-width: 600px;}
+    th,td{padding:12px; border-bottom:1px solid rgba(255,255,255,.08); font-size:13px; text-align:left;}
+    th{background:rgba(255,255,255,.03); color: #94a3b8; font-weight: 600;}
+    tfoot{font-weight:bold; background:rgba(255,255,255,.05); color: #fff;}
     .hidden{display:none;}
+    .pill{padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,0.1); font-size: 11px;}
   </style>
 </head>
 <body>
@@ -324,13 +325,15 @@ function adminHtmlPage() {
         <option value="pending">Pendientes</option>
         <option value="license_sent">Enviadas</option>
       </select>
-      <button class="btn" onclick="loadOrders()">Refrescar</button>
+      <button class="btn" onclick="loadOrders()">Refrescar Pedidos</button>
     </div>
-    <div class="card" style="overflow-x:auto;">
-      <table id="table-orders">
-        <thead><tr><th>Fecha</th><th>Método</th><th>Email</th><th>Referencia</th><th>Acción</th></tr></thead>
-        <tbody id="rows-orders"></tbody>
-      </table>
+    <div class="card">
+      <div class="scroll-area">
+        <table id="table-orders">
+          <thead><tr><th>Fecha</th><th>Método</th><th>Email</th><th>Referencia</th><th>Acción</th></tr></thead>
+          <tbody id="rows-orders"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -339,14 +342,16 @@ function adminHtmlPage() {
       <button class="btn" onclick="loadInvoices()">Actualizar Libro</button>
       <button class="btn-csv" onclick="exportCSV()">Exportar CSV (Hacienda)</button>
     </div>
-    <div class="card" style="overflow-x:auto;">
-      <table id="table-invoices">
-        <thead>
-          <tr><th>Factura</th><th>Fecha</th><th>Email</th><th>Base (€)</th><th>IVA (€)</th><th>Ret (€)</th><th>Total (€)</th><th>Método</th></tr>
-        </thead>
-        <tbody id="rows-invoices"></tbody>
-        <tfoot id="foot-invoices"></tfoot>
-      </table>
+    <div class="card">
+      <div class="scroll-area">
+        <table id="table-invoices">
+          <thead>
+            <tr><th>Factura</th><th>Fecha</th><th>Email</th><th>Base (€)</th><th>IVA (€)</th><th>Ret (€)</th><th>Total (€)</th><th>Método</th></tr>
+          </thead>
+          <tbody id="rows-invoices"></tbody>
+          <tfoot id="foot-invoices"></tfoot>
+        </table>
+      </div>
     </div>
   </div>
 </main>
@@ -364,13 +369,23 @@ function adminHtmlPage() {
     document.getElementById('view-invoices').classList.toggle('hidden', t!=='invoices');
     document.getElementById('tab-orders').classList.toggle('active', t==='orders');
     document.getElementById('tab-invoices').classList.toggle('active', t==='invoices');
-    if(t==='invoices') loadInvoices();
+    if(t==='invoices') {
+        // En lugar de cargar automático, tratamos el click como ejecución
+        loadInvoices();
+    }
   }
 
   async function api(path, opts={}){
     const key = (localStorage.getItem(KEY_LS) || '').trim();
     const headers = Object.assign({'x-admin-key': key}, opts.headers || {});
     const r = await fetch(path, Object.assign({}, opts, {headers}));
+    
+    // Si la respuesta no es JSON, capturamos el error antes de romper
+    const contentType = r.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("El servidor respondió con un error (404/500). Verifica la ruta en server.js.");
+    }
+    
     const j = await r.json();
     if(!r.ok) throw new Error(j.code || j.error || 'ERROR');
     return j;
@@ -378,11 +393,11 @@ function adminHtmlPage() {
 
   async function loadOrders(){
     const rows = document.getElementById('rows-orders');
-    rows.innerHTML = '<tr><td colspan="5">Cargando...</td></tr>';
+    rows.innerHTML = '<tr><td colspan="5">Ejecutando orden de carga...</td></tr>';
     try {
       const j = await api('/api/admin/manual-orders?status=' + document.getElementById('status').value);
       if(!j.items || j.items.length === 0) {
-        rows.innerHTML = '<tr><td colspan="5">No hay pedidos.</td></tr>';
+        rows.innerHTML = '<tr><td colspan="5">No hay pedidos registrados.</td></tr>';
         return;
       }
       rows.innerHTML = j.items.map(o => \`<tr>
@@ -392,17 +407,17 @@ function adminHtmlPage() {
         <td>\${o.referencia || '—'}</td>
         <td>\${o.status==='pending' ? '<button class="btn2" onclick="complete(\\''+o.id+'\\')">Confirmar</button>':''}</td>
       </tr>\`).join('');
-    } catch(e){ rows.innerHTML = '<tr><td colspan="5" style="color:red;">Error: '+e.message+'</td></tr>'; }
+    } catch(e){ rows.innerHTML = '<tr><td colspan="5" style="color:red;">Error de ejecución: '+e.message+'</td></tr>'; }
   }
 
   async function loadInvoices(){
     const rows = document.getElementById('rows-invoices');
     const foot = document.getElementById('foot-invoices');
-    rows.innerHTML = '<tr><td colspan="8">Cargando facturas...</td></tr>';
+    rows.innerHTML = '<tr><td colspan="8">Ejecutando orden: Recuperando facturas...</td></tr>';
     try {
       const j = await api('/api/admin/invoices');
       if(!j.items || j.items.length === 0) {
-        rows.innerHTML = '<tr><td colspan="8">El libro de facturas está vacío.</td></tr>';
+        rows.innerHTML = '<tr><td colspan="8">El libro de facturas está vacío en este momento.</td></tr>';
         foot.innerHTML = '';
         return;
       }
@@ -417,28 +432,28 @@ function adminHtmlPage() {
           <td>\${i.invoiceNumber || '—'}</td>
           <td>\${fechaStr}</td>
           <td>\${i.email || '—'}</td>
-          <td>\${(i.base || 0).toFixed(2)}</td>
-          <td>\${(i.iva || 0).toFixed(2)}</td>
-          <td>-\${(i.ret || 0).toFixed(2)}</td>
-          <td style="color:#22c55e; font-weight:bold;">\${(i.total || 0).toFixed(2)}</td>
-          <td><span style="text-transform:uppercase; font-size:10px;" class="pill">\${i.method || 'manual'}</span></td>
+          <td>\${(i.base || 0).toFixed(2).replace('.', ',')}€</td>
+          <td>\${(i.iva || 0).toFixed(2).replace('.', ',')}€</td>
+          <td>-\${(i.ret || 0).toFixed(2).replace('.', ',')}€</td>
+          <td style="color:#22c55e; font-weight:bold;">\${(i.total || 0).toFixed(2).replace('.', ',')}€</td>
+          <td><span class="pill">\${i.method || 'manual'}</span></td>
         </tr>\`;
       }).join('');
 
       foot.innerHTML = \`<tr>
         <td colspan="3">TOTALES DEL PERÍODO</td>
-        <td>\${totals.base.toFixed(2)}€</td>
-        <td>\${totals.iva.toFixed(2)}€</td>
-        <td>-\${totals.ret.toFixed(2)}€</td>
-        <td style="color:#22c55e;">\${totals.total.toFixed(2)}€</td>
+        <td>\${totals.base.toFixed(2).replace('.', ',')}€</td>
+        <td>\${totals.iva.toFixed(2).replace('.', ',')}€</td>
+        <td>-\${totals.ret.toFixed(2).replace('.', ',')}€</td>
+        <td style="color:#22c55e;">\${totals.total.toFixed(2).replace('.', ',')}€</td>
         <td></td>
       </tr>\`;
       window.lastInvoices = j.items;
-    } catch(e){ rows.innerHTML = '<tr><td colspan="8" style="color:red;">Error: '+e.message+'</td></tr>'; }
+    } catch(e){ rows.innerHTML = '<tr><td colspan="8" style="color:red;">Fallo en la orden: '+e.message+'</td></tr>'; }
   }
 
   async function complete(id){
-    if(!confirm('¿Confirmar pago y emitir factura?')) return;
+    if(!confirm('¿Ejecutar orden: Confirmar pago y emitir factura?')) return;
     try {
       await api('/api/admin/manual-orders/' + id + '/complete', {method:'POST'});
       loadOrders();
@@ -450,7 +465,7 @@ function adminHtmlPage() {
     let csv = "Factura;Fecha;Email;Base;IVA;Retencion;Total;Metodo\\n";
     window.lastInvoices.forEach(i => {
       const f = i.date && i.date._seconds ? new Date(i.date._seconds*1000).toLocaleDateString() : '';
-      csv += \`\${i.invoiceNumber || ''};\${f};\${i.email || ''};\${i.base || 0};\${i.iva || 0};\${i.ret || 0};\${i.total || 0};\${i.method || 'manual'}\\n\`;
+      csv += \`\${i.invoiceNumber || ''};\${f};\${i.email || ''};\${(i.base || 0).toFixed(2)};\${(i.iva || 0).toFixed(2)};\${(i.ret || 0).toFixed(2)};\${(i.total || 0).toFixed(2)};\${i.method || 'manual'}\\n\`;
     });
     const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
     const link = document.createElement("a");
@@ -459,7 +474,7 @@ function adminHtmlPage() {
     link.click();
   }
 
-  // Carga inicial
+  // Carga inicial de la orden de pedidos
   loadOrders();
 </script>
 </body>
