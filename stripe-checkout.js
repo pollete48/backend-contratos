@@ -3,12 +3,10 @@
 //
 // Requisitos ENV:
 // - STRIPE_SECRET_KEY
-// - STRIPE_PRICE_ID
+// - STRIPE_PRICE_ID_PARTICULAR (130 + IVA = 157,30€)
+// - STRIPE_PRICE_ID_PROFESIONAL (130 + IVA - 7% = 148,20€)
 // - CHECKOUT_SUCCESS_URL    (ej: https://tuappgo.com/contratos/#/pago-ok)
 // - CHECKOUT_CANCEL_URL      (ej: https://tuappgo.com/contratos/#/pago-cancelado)
-//
-// Ruta sugerida:
-//    app.post('/api/stripe/checkout', createCheckoutSessionHandler);
 
 const Stripe = require('stripe');
 
@@ -27,53 +25,47 @@ function fail(res, status, code, message) {
 }
 
 /**
- * Limpia URL de entorno:
- * - trim
- * - elimina espacios
- * - elimina query ?session_id=... si ya lo hubieran puesto en env
- * - elimina "#" final suelto
+ * Limpia URL de entorno
  */
 function sanitizeBaseUrl(raw) {
   const s = String(raw || '').trim();
-
-  // Si alguien metió ?session_id=... en la env, lo quitamos para no duplicarlo
   const noQuery = s.split('?')[0];
-
-  // Quita un # final suelto (por si alguien puso .../#)
   const cleaned = noQuery.endsWith('#') ? noQuery.slice(0, -1) : noQuery;
-
   return cleaned;
 }
 
 /**
- * Construye success_url final añadiendo session_id.
- * Nota: si el success URL contiene "#/ruta", la query va ANTES del #.
- * Stripe suele aceptar ambos, pero esto lo deja correcto:
- * https://dominio/path?session_id=...#/ruta
+ * Construye success_url final añadiendo session_id
  */
 function buildSuccessUrlWithSessionId(successBase) {
   const base = sanitizeBaseUrl(successBase);
-
-  // Si hay hash, la query debe ir antes del hash
   const [beforeHash, afterHash] = base.split('#');
-
   const withQuery = `${beforeHash}?session_id={CHECKOUT_SESSION_ID}`;
-
-  // Si había hash, lo reponemos
   return afterHash !== undefined ? `${withQuery}#${afterHash}` : withQuery;
 }
 
 async function createCheckoutSessionHandler(req, res) {
   try {
-    const PRICE_ID = requireEnv('STRIPE_PRICE_ID');
     const successEnv = requireEnv('CHECKOUT_SUCCESS_URL');
     const cancelEnv = requireEnv('CHECKOUT_CANCEL_URL');
 
     const successUrlFinal = buildSuccessUrlWithSessionId(successEnv);
     const cancelUrlFinal = sanitizeBaseUrl(cancelEnv);
 
-    // Email opcional (si viene en el body)
+    // Datos que vienen del frontend (Modal)
     const email = String(req.body?.email || '').trim().toLowerCase();
+    const tipoCliente = req.body?.tipoCliente || 'particular'; // 'particular' | 'profesional'
+    const nombreFactura = req.body?.nombreFactura || '';
+    const nifFactura = req.body?.nifFactura || '';
+    const direccionFactura = req.body?.direccionFactura || '';
+
+    // SELECCIÓN DINÁMICA DEL PRECIO (Estrategia Fiscal 70%)
+    let PRICE_ID;
+    if (tipoCliente === 'profesional') {
+      PRICE_ID = requireEnv('STRIPE_PRICE_ID_PROFESIONAL');
+    } else {
+      PRICE_ID = requireEnv('STRIPE_PRICE_ID_PARTICULAR');
+    }
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
@@ -81,7 +73,6 @@ async function createCheckoutSessionHandler(req, res) {
 
       customer_email: email || undefined,
 
-      // Activamos la creación de factura (invoice) por si quieres que Stripe también genere su PDF básico
       invoice_creation: {
         enabled: true,
       },
@@ -89,11 +80,15 @@ async function createCheckoutSessionHandler(req, res) {
       success_url: successUrlFinal,
       cancel_url: cancelUrlFinal,
 
-      // Permitir cupones (opcional, si quieres usar códigos de descuento de Stripe)
       allow_promotion_codes: true,
 
+      // METADATOS: Crucial para que el webhook genere la factura correcta
       metadata: {
         product: 'tuappgo-licencia-anual',
+        tipoCliente: tipoCliente,
+        nombreFactura: nombreFactura,
+        nifFactura: nifFactura,
+        direccionFactura: direccionFactura
       },
     });
 
