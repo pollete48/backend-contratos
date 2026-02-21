@@ -53,7 +53,6 @@ function buildInvoiceHtml(invoiceData) {
     email: process.env.EMPRESA_EMAIL || ''
   };
 
-  // Sección del receptor solo si hay datos (Factura Completa vs Simplificada)
   const receptorHtml = invoiceData.nifFactura ? `
     <div style="margin-top:20px; font-size:12px; color:#555; text-align:left;">
       <strong>RECEPTOR:</strong><br>
@@ -186,7 +185,6 @@ async function listInvoices(req, res) {
 
     let q = db.collection('invoices').orderBy('date', 'desc');
 
-    // Filtrado por fechas
     const { startDate, endDate } = req.query;
     if (startDate) {
       const start = new Date(startDate);
@@ -224,7 +222,7 @@ async function completeManualOrder(req, res) {
         status: 'paid_processing',
         paidAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        amount: getPriceEur(),
+        amount: o.amount || getPriceEur(),
         currency: 'EUR',
       });
       return { id: snap.id, ...o };
@@ -253,8 +251,6 @@ async function completeManualOrder(req, res) {
     const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
     const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
     
-    // Si es profesional, el total es el precio con descuento. Si no, es precio base+iva.
-    // Usamos el total que viene del pedido (order.amount) o recalculamos.
     const totalVal = order.amount || getPriceEur();
     const baseVal = getBaseImponible();
     const ivaVal = parseFloat((baseVal * (ivaPerc / 100)).toFixed(2));
@@ -387,6 +383,7 @@ function adminHtmlPage() {
         <span class="filter-label">Período:</span>
         <input type="date" id="date-start">
         <input type="date" id="date-end">
+        <button class="btn-outline" style="padding: 5px 10px; font-size: 11px;" onclick="clearFilters()">Limpiar</button>
       </div>
       <div class="filter-group">
         <button class="btn-outline" onclick="setQuarter(1)">Q1</button>
@@ -437,6 +434,12 @@ function adminHtmlPage() {
     if(t==='invoices') {
         loadInvoices();
     }
+  }
+
+  function clearFilters() {
+    document.getElementById('date-start').value = '';
+    document.getElementById('date-end').value = '';
+    loadInvoices();
   }
 
   function setQuarter(q) {
@@ -555,9 +558,8 @@ function adminHtmlPage() {
   }
 
   function exportCSV(){
-    if(!window.lastInvoices || window.lastInvoices.length === 0) { alert('No hay datos'); return; }
+    if(!window.lastInvoices || window.lastInvoices.length === 0) { alert('No hay datos para exportar'); return; }
     
-    // Encabezado completo para Hacienda
     let csv = "Factura;Fecha;NIF;Nombre/Empresa;Base;IVA;Retencion;Total;Metodo;Tipo\\n";
     
     window.lastInvoices.forEach(i => {
@@ -565,10 +567,13 @@ function adminHtmlPage() {
       csv += \`\${i.invoiceNumber || ''};\${f};\${i.nifFactura || ''};\${i.nombreFactura || i.email || ''};\${(i.base || 0).toFixed(2)};\${(i.iva || 0).toFixed(2)};\${(i.ret || 0).toFixed(2)};\${(i.total || 0).toFixed(2)};\${i.method || ''};\${i.tipoCliente || ''}\\n\`;
     });
     
+    const start = document.getElementById('date-start').value || 'inicio';
+    const end = document.getElementById('date-end').value || 'fin';
+    
     const blob = new Blob(["\\ufeff" + csv], {type:'text/csv;charset=utf-8;'});
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = "libro_facturas_tuappgo_" + new Date().toISOString().split('T')[0] + ".csv";
+    link.download = \`libro_facturas_tuappgo_\${start}_a_\${end}.csv\`;
     link.click();
   }
 
