@@ -64,6 +64,16 @@ function buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData }) {
     email: process.env.EMPRESA_EMAIL || ''
   };
 
+  // Bloque del receptor (solo si hay NIF)
+  const receptorHtml = invoiceData.nifFactura ? `
+    <div style="margin-top:20px; font-size:12px; color:#555; text-align:left;">
+      <strong>RECEPTOR:</strong><br>
+      ${invoiceData.nombreFactura || ''}<br>
+      NIF: ${invoiceData.nifFactura}<br>
+      ${invoiceData.direccionFactura || ''}
+    </div>
+  ` : '';
+
   const facturaHtml = `
     <div style="margin-top:30px; border:1px solid #ddd; padding:20px; font-family:Arial, sans-serif; border-radius:8px; color:#333; max-width: 500px;">
       <table style="width:100%;">
@@ -76,6 +86,9 @@ function buildPurchaseEmail({ code, expiresAt, supportEmail, invoiceData }) {
           </td>
         </tr>
       </table>
+
+      ${receptorHtml}
+
       <div style="margin-top:20px;">
         <h3 style="margin-bottom:5px;">FACTURA: ${invoiceData.numero}</h3>
         <p style="font-size:13px; margin-top:0;">Fecha: ${invoiceData.fecha}</p>
@@ -181,21 +194,30 @@ async function stripeWebhookHandler(req, res) {
       collectionName: 'licenses',
     });
 
+    const meta = session.metadata || {};
+    const tipoCliente = meta.tipoCliente || 'particular';
+
     const numFactura = await getNextInvoiceNumber(db);
     const ivaPerc = parseFloat(process.env.IVA_PORCENTAJE || '21');
     const retPerc = parseFloat(process.env.RETENCION_PORCENTAJE || '7');
     const baseVal = parseFloat(process.env.PRECIO_BASE || '130.00');
     const totalVal = session.amount_total / 100;
     
+    // Cálculo de retención basado en los metadatos de la sesión
+    const retValCalculada = tipoCliente === 'profesional' ? (baseVal * (retPerc / 100)) : 0;
+
     const invoiceData = {
       numero: numFactura,
       fecha: new Date().toLocaleDateString('es-ES'),
       base: baseVal.toFixed(2).replace('.', ','),
       iva: (baseVal * (ivaPerc / 100)).toFixed(2).replace('.', ','),
-      ret: (baseVal * (retPerc / 100)).toFixed(2).replace('.', ','),
+      ret: retValCalculada.toFixed(2).replace('.', ','),
       total: totalVal.toFixed(2).replace('.', ','),
       ivaPerc,
-      retPerc
+      retPerc,
+      nombreFactura: meta.nombreFactura || '',
+      nifFactura: meta.nifFactura || '',
+      direccionFactura: meta.direccionFactura || ''
     };
 
     // REGISTRO EN EL LIBRO DE FACTURAS EMITIDAS
@@ -205,10 +227,14 @@ async function stripeWebhookHandler(req, res) {
       email: customerEmail,
       base: baseVal,
       iva: parseFloat((baseVal * (ivaPerc / 100)).toFixed(2)),
-      ret: parseFloat((baseVal * (retPerc / 100)).toFixed(2)),
+      ret: parseFloat(retValCalculada.toFixed(2)),
       total: totalVal,
       method: 'stripe',
-      stripeSessionId: stripeSessionId
+      stripeSessionId: stripeSessionId,
+      tipoCliente,
+      nombreFactura: meta.nombreFactura || '',
+      nifFactura: meta.nifFactura || '',
+      direccionFactura: meta.direccionFactura || ''
     });
 
     const supportEmail = process.env.SUPPORT_EMAIL || 'contacto@tuappgo.com';
